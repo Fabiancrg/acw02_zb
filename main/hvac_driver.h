@@ -66,8 +66,8 @@ typedef struct {
 
 /* UART Configuration */
 #define HVAC_UART_NUM           UART_NUM_1
-#define HVAC_UART_TX_PIN        16
-#define HVAC_UART_RX_PIN        17
+#define HVAC_UART_TX_PIN        4    // GPIO4 (changed from 16 to avoid console conflict)
+#define HVAC_UART_RX_PIN        5    // GPIO5 (changed from 17 to avoid console conflict)
 #define HVAC_UART_BAUD_RATE     9600
 #define HVAC_UART_BUF_SIZE      1024
 

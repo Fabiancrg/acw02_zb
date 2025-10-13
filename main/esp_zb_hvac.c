@@ -9,10 +9,12 @@
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "esp_intr_alloc.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
@@ -34,7 +36,7 @@ static const char *TAG = "HVAC_ZIGBEE";
 static esp_err_t deferred_driver_init(void);
 static void hvac_update_zigbee_attributes(uint8_t param);
 static void hvac_periodic_update(uint8_t param);
-static void button_init(void);
+static esp_err_t button_init(void);
 static void button_task(void *arg);
 static void factory_reset_device(uint8_t param);
 
@@ -66,7 +68,6 @@ static void IRAM_ATTR button_isr_handler(void *arg)
 static void button_task(void *arg)
 {
     uint32_t io_num;
-    bool button_pressed = false;
     TickType_t press_start_time = 0;
     bool long_press_triggered = false;
     const TickType_t LONG_PRESS_DURATION = pdMS_TO_TICKS(BUTTON_LONG_PRESS_TIME_MS);
@@ -83,7 +84,6 @@ static void button_task(void *arg)
             int button_level = gpio_get_level(BOOT_BUTTON_GPIO);
             
             if (button_level == 0) {  // Button pressed (falling edge)
-                button_pressed = true;
                 press_start_time = xTaskGetTickCount();
                 long_press_triggered = false;
                 ESP_LOGI(TAG, "[BUTTON] Pressed - hold 5 sec for factory reset");
@@ -105,7 +105,6 @@ static void button_task(void *arg)
                     uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
                     ESP_LOGI(TAG, "[BUTTON] Released (held for %lu ms)", press_duration);
                 }
-                button_pressed = false;
             }
             
             // Re-enable interrupts
@@ -184,8 +183,12 @@ static esp_err_t deferred_driver_init(void)
     }
     ESP_LOGI(TAG, "[INIT] Boot button initialization complete");
     
+    /* Small delay to ensure logs are flushed */
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
     /* Initialize HVAC UART driver */
     ESP_LOGI(TAG, "[INIT] Initializing HVAC UART driver...");
+    ESP_LOGI(TAG, "[INIT] About to call hvac_driver_init()");
     esp_err_t ret = ESP_OK;
     
     // Wrap HVAC init in try-catch equivalent to prevent crashes

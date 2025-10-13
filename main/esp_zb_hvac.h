@@ -20,6 +20,9 @@
 #define HA_ESP_DISPLAY_ENDPOINT         4                                    /* Display control switch endpoint */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
+/* Button configuration */
+#define ESP_INTR_FLAG_DEFAULT 0
+
 /* Basic manufacturer information */
 #define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
 #define ESP_MODEL_IDENTIFIER "\x07""acw02-z"         /* Customized model identifier */

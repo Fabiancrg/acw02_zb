@@ -301,9 +301,12 @@ static void hvac_rx_task(void *arg)
  */
 esp_err_t hvac_driver_init(void)
 {
-    ESP_LOGI(TAG, "Initializing HVAC driver");
+    ESP_LOGI(TAG, "[HVAC] Starting HVAC driver initialization");
     
     // Configure UART
+    ESP_LOGI(TAG, "[HVAC] Configuring UART%d (TX=%d, RX=%d, baud=%d)", 
+             HVAC_UART_NUM, HVAC_UART_TX_PIN, HVAC_UART_RX_PIN, HVAC_UART_BAUD_RATE);
+    
     uart_config_t uart_config = {
         .baud_rate = HVAC_UART_BAUD_RATE,
         .data_bits = UART_DATA_8_BITS,
@@ -313,38 +316,48 @@ esp_err_t hvac_driver_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
     
+    ESP_LOGI(TAG, "[HVAC] Setting UART parameters");
     esp_err_t ret = uart_param_config(HVAC_UART_NUM, &uart_config);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure UART parameters");
+        ESP_LOGE(TAG, "[ERROR] Failed to configure UART parameters: %s", esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(TAG, "[OK] UART parameters configured");
     
+    ESP_LOGI(TAG, "[HVAC] Setting UART pins");
     ret = uart_set_pin(HVAC_UART_NUM, HVAC_UART_TX_PIN, HVAC_UART_RX_PIN, 
                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set UART pins");
+        ESP_LOGE(TAG, "[ERROR] Failed to set UART pins: %s", esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(TAG, "[OK] UART pins configured");
     
+    ESP_LOGI(TAG, "[HVAC] Installing UART driver");
     ret = uart_driver_install(HVAC_UART_NUM, HVAC_UART_BUF_SIZE * 2, 
                              HVAC_UART_BUF_SIZE * 2, 0, NULL, 0);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to install UART driver");
+        ESP_LOGE(TAG, "[ERROR] Failed to install UART driver: %s", esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(TAG, "[OK] UART driver installed");
     
     // Create RX task
+    ESP_LOGI(TAG, "[HVAC] Creating RX task");
     BaseType_t task_ret = xTaskCreate(hvac_rx_task, "hvac_rx", 3072, NULL, 5, NULL);
     if (task_ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create RX task");
+        ESP_LOGE(TAG, "[ERROR] Failed to create RX task");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "[OK] RX task created");
     
-    ESP_LOGI(TAG, "HVAC driver initialized successfully");
+    ESP_LOGI(TAG, "[OK] HVAC driver initialized successfully");
     
     // Send initial keepalive
+    ESP_LOGI(TAG, "[HVAC] Sending initial keepalive");
     vTaskDelay(pdMS_TO_TICKS(100));
     hvac_send_keepalive();
+    ESP_LOGI(TAG, "[OK] Initial keepalive sent");
     
     return ESP_OK;
 }
