@@ -132,7 +132,7 @@ const definition = {
             .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
             .withEndpoint('ep1'),
         exposes.enum('fan_mode', exposes.access.ALL, ['off', 'low', 'medium', 'high', 'on', 'auto', 'smart'])
-            .withDescription('Fan speed control')
+            .withDescription('Fan speed: off=Off, low=Quiet(P20), medium=Low-Med(P40)/Medium(P60), high=Med-High(P80)/High(P100), auto=Auto, smart=Turbo')
             .withEndpoint('ep1'),
         exposes.binary('eco_mode', exposes.access.ALL, 'ON', 'OFF')
             .withDescription('Eco mode')
