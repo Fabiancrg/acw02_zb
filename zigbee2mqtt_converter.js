@@ -23,8 +23,12 @@ const tzLocal = {
     eco_mode: {
         key: ['eco_mode'],
         convertSet: async (entity, key, value, meta) => {
-            const state = value === 'ON' ? 1 : 0;
-            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            // Use command instead of write (on/off are commands, not attributes)
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
             return {state: {eco_mode: value}};
         },
         convertGet: async (entity, key, meta) => {
@@ -34,8 +38,12 @@ const tzLocal = {
     swing_mode: {
         key: ['swing_mode'],
         convertSet: async (entity, key, value, meta) => {
-            const state = value === 'ON' ? 1 : 0;
-            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            // Use command instead of write
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
             return {state: {swing_mode: value}};
         },
         convertGet: async (entity, key, meta) => {
@@ -45,8 +53,12 @@ const tzLocal = {
     display: {
         key: ['display'],
         convertSet: async (entity, key, value, meta) => {
-            const state = value === 'ON' ? 1 : 0;
-            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            // Use command instead of write
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
             return {state: {display: value}};
         },
         convertGet: async (entity, key, meta) => {
