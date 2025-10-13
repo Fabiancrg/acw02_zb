@@ -53,85 +53,122 @@ static void factory_reset_device(uint8_t param)
     esp_restart();
 }
 
+/* Boot button queue and ISR handler (interrupt-based like working project) */
+static QueueHandle_t button_evt_queue = NULL;
+
+static void IRAM_ATTR button_isr_handler(void *arg)
+{
+    uint32_t gpio_num = BOOT_BUTTON_GPIO;
+    xQueueSendFromISR(button_evt_queue, &gpio_num, NULL);
+}
+
 /* Button monitoring task */
 static void button_task(void *arg)
 {
-    uint32_t press_start_time = 0;
+    uint32_t io_num;
     bool button_pressed = false;
+    TickType_t press_start_time = 0;
     bool long_press_triggered = false;
+    const TickType_t LONG_PRESS_DURATION = pdMS_TO_TICKS(BUTTON_LONG_PRESS_TIME_MS);
     
-    ESP_LOGI(TAG, "[BUTTON] Monitoring started on GPIO%d", BOOT_BUTTON_GPIO);
-    ESP_LOGI(TAG, "[BUTTON] Press and hold for %d seconds to factory reset", BUTTON_LONG_PRESS_TIME_MS / 1000);
+    ESP_LOGI(TAG, "[BUTTON] Task started - waiting for button events");
     
-    while (1) {
-        int button_level = gpio_get_level(BOOT_BUTTON_GPIO);
-        
-        if (button_level == 0) {  // Button pressed (active low)
-            if (!button_pressed) {
-                // Button just pressed
+    for (;;) {
+        // Wait for button interrupt
+        if (xQueueReceive(button_evt_queue, &io_num, portMAX_DELAY)) {
+            // Disable interrupts during handling
+            gpio_intr_disable(BOOT_BUTTON_GPIO);
+            
+            // Check button state
+            int button_level = gpio_get_level(BOOT_BUTTON_GPIO);
+            
+            if (button_level == 0) {  // Button pressed (falling edge)
                 button_pressed = true;
-                long_press_triggered = false;
                 press_start_time = xTaskGetTickCount();
-                ESP_LOGI(TAG, "[BUTTON] Boot button pressed");
-            } else {
-                // Button still pressed - check for long press
-                uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
+                long_press_triggered = false;
+                ESP_LOGI(TAG, "[BUTTON] Pressed - hold 5 sec for factory reset");
                 
-                if (press_duration >= BUTTON_LONG_PRESS_TIME_MS && !long_press_triggered) {
-                    long_press_triggered = true;
-                    ESP_LOGW(TAG, "[BUTTON] Long press detected! Triggering factory reset...");
-                    
-                    // Schedule factory reset in Zigbee context
-                    esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
+                // Wait while button is held
+                while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                    TickType_t current_time = xTaskGetTickCount();
+                    if ((current_time - press_start_time) >= LONG_PRESS_DURATION && !long_press_triggered) {
+                        long_press_triggered = true;
+                        ESP_LOGW(TAG, "[BUTTON] Long press detected! Triggering factory reset...");
+                        // Schedule factory reset in Zigbee context
+                        esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(100));
                 }
-            }
-        } else {
-            // Button released
-            if (button_pressed) {
-                uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
                 
+                // Button released
                 if (!long_press_triggered) {
+                    uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
                     ESP_LOGI(TAG, "[BUTTON] Released (held for %lu ms)", press_duration);
                 }
-                
                 button_pressed = false;
             }
+            
+            // Re-enable interrupts
+            gpio_intr_enable(BOOT_BUTTON_GPIO);
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(50));  // Check every 50ms
     }
 }
 
-/* Initialize boot button */
-static void button_init(void)
+/* Initialize boot button with interrupt-based handling */
+static esp_err_t button_init(void)
 {
-    ESP_LOGI(TAG, "[INIT] Configuring GPIO%d for button...", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "[INIT] Initializing boot button on GPIO%d", BOOT_BUTTON_GPIO);
     
+    // Configure GPIO
     gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_NEGEDGE,  // Interrupt on button press (falling edge)
         .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
+        .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
     };
     
     esp_err_t ret = gpio_config(&io_conf);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "[ERROR] Failed to configure boot button GPIO: %s", esp_err_to_name(ret));
-        return;
+        ESP_LOGE(TAG, "[ERROR] Failed to configure GPIO: %s", esp_err_to_name(ret));
+        return ret;
     }
     ESP_LOGI(TAG, "[OK] GPIO configured");
     
-    // Create button monitoring task
-    ESP_LOGI(TAG, "[INIT] Creating button monitoring task...");
-    BaseType_t task_ret = xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
+    // Create event queue
+    button_evt_queue = xQueueCreate(10, sizeof(uint32_t));
+    if (!button_evt_queue) {
+        ESP_LOGE(TAG, "[ERROR] Failed to create event queue");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "[OK] Event queue created");
+    
+    // Install GPIO ISR service (may already be installed, that's OK)
+    esp_err_t isr_ret = gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+    if (isr_ret != ESP_OK && isr_ret != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "[ERROR] Failed to install ISR service: %s", esp_err_to_name(isr_ret));
+        return isr_ret;
+    }
+    ESP_LOGI(TAG, "[OK] ISR service ready");
+    
+    // Add ISR handler
+    ret = gpio_isr_handler_add(BOOT_BUTTON_GPIO, button_isr_handler, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "[ERROR] Failed to add ISR handler: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "[OK] ISR handler added");
+    
+    // Create button task
+    BaseType_t task_ret = xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
     if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "[ERROR] Failed to create button task");
-        return;
+        return ESP_FAIL;
     }
     ESP_LOGI(TAG, "[OK] Button task created");
     
-    ESP_LOGI(TAG, "[OK] Boot button fully initialized on GPIO%d", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "[OK] Boot button initialization complete");
+    return ESP_OK;
 }
 
 static esp_err_t deferred_driver_init(void)
@@ -140,7 +177,11 @@ static esp_err_t deferred_driver_init(void)
     
     /* Initialize boot button for factory reset */
     ESP_LOGI(TAG, "[INIT] Initializing boot button...");
-    button_init();
+    esp_err_t button_ret = button_init();
+    if (button_ret != ESP_OK) {
+        ESP_LOGE(TAG, "[ERROR] Button initialization failed");
+        return button_ret;
+    }
     ESP_LOGI(TAG, "[INIT] Boot button initialization complete");
     
     /* Initialize HVAC UART driver */
@@ -502,7 +543,7 @@ static void esp_zb_task(void *pvParameters)
     ESP_LOGI(TAG, "  [+] Adding Basic cluster (0x0000)...");
     esp_zb_basic_cluster_cfg_t basic_cfg = {
         .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-        .power_source = ESP_ZB_ZCL_BASIC_POWER_SOURCE_DEFAULT_VALUE,
+        .power_source = 0x01,  // 0x01 = Mains (single phase), 0x03 = Battery
     };
     esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     
