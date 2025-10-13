@@ -12,6 +12,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "driver/gpio.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
@@ -25,27 +26,127 @@ static const char *TAG = "HVAC_ZIGBEE";
 /* HVAC state update interval */
 #define HVAC_UPDATE_INTERVAL_MS     30000  // 30 seconds
 
-/* Custom attributes for HVAC features not in standard thermostat cluster */
-#define HVAC_ATTR_ECO_MODE_ID       0xF000
-#define HVAC_ATTR_SWING_MODE_ID     0xF001
-#define HVAC_ATTR_DISPLAY_ON_ID     0xF002
-#define HVAC_ATTR_ERROR_TEXT_ID     0xF003
+/* Boot button configuration for factory reset */
+#define BOOT_BUTTON_GPIO            GPIO_NUM_9
+#define BUTTON_LONG_PRESS_TIME_MS   5000
 
 /********************* Function Declarations **************************/
 static esp_err_t deferred_driver_init(void);
 static void hvac_update_zigbee_attributes(uint8_t param);
 static void hvac_periodic_update(uint8_t param);
+static void button_init(void);
+static void button_task(void *arg);
+static void factory_reset_device(uint8_t param);
+
+/* Factory reset function */
+static void factory_reset_device(uint8_t param)
+{
+    ESP_LOGW(TAG, "🔄 Performing factory reset...");
+    
+    /* Perform factory reset - this will clear all Zigbee network settings */
+    esp_zb_factory_reset();
+    
+    ESP_LOGI(TAG, "✅ Factory reset successful - device will restart");
+    
+    /* Restart the device after a short delay */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+/* Button monitoring task */
+static void button_task(void *arg)
+{
+    uint32_t press_start_time = 0;
+    bool button_pressed = false;
+    bool long_press_triggered = false;
+    
+    ESP_LOGI(TAG, "🔘 Button monitoring started on GPIO%d", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "📋 Press and hold for %d seconds to factory reset", BUTTON_LONG_PRESS_TIME_MS / 1000);
+    
+    while (1) {
+        int button_level = gpio_get_level(BOOT_BUTTON_GPIO);
+        
+        if (button_level == 0) {  // Button pressed (active low)
+            if (!button_pressed) {
+                // Button just pressed
+                button_pressed = true;
+                long_press_triggered = false;
+                press_start_time = xTaskGetTickCount();
+                ESP_LOGI(TAG, "🔘 Boot button pressed");
+            } else {
+                // Button still pressed - check for long press
+                uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
+                
+                if (press_duration >= BUTTON_LONG_PRESS_TIME_MS && !long_press_triggered) {
+                    long_press_triggered = true;
+                    ESP_LOGW(TAG, "🔄 Long press detected! Triggering factory reset...");
+                    
+                    // Schedule factory reset in Zigbee context
+                    esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
+                }
+            }
+        } else {
+            // Button released
+            if (button_pressed) {
+                uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
+                
+                if (!long_press_triggered) {
+                    ESP_LOGI(TAG, "🔘 Boot button released (held for %lu ms)", press_duration);
+                }
+                
+                button_pressed = false;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));  // Check every 50ms
+    }
+}
+
+/* Initialize boot button */
+static void button_init(void)
+{
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = (1ULL << BOOT_BUTTON_GPIO),
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+    
+    esp_err_t ret = gpio_config(&io_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure boot button GPIO");
+        return;
+    }
+    
+    // Create button monitoring task
+    BaseType_t task_ret = xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
+    if (task_ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create button task");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "✅ Boot button initialized on GPIO%d", BOOT_BUTTON_GPIO);
+}
 
 static esp_err_t deferred_driver_init(void)
 {
+    ESP_LOGI(TAG, "🔧 Starting deferred driver initialization...");
+    
+    /* Initialize boot button for factory reset */
+    button_init();
+    
     /* Initialize HVAC UART driver */
+    ESP_LOGI(TAG, "🔧 Initializing HVAC UART driver...");
     esp_err_t ret = hvac_driver_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize HVAC driver");
-        return ret;
+        ESP_LOGE(TAG, "❌ Failed to initialize HVAC driver (UART connection issue?)");
+        ESP_LOGW(TAG, "⚠️  Continuing without HVAC - endpoints will still be created");
+        // Don't fail - we can still expose Zigbee endpoints without HVAC connected
+    } else {
+        ESP_LOGI(TAG, "✅ HVAC driver initialized successfully");
     }
     
-    ESP_LOGI(TAG, "HVAC driver initialized successfully");
     return ESP_OK;
 }
 
@@ -282,26 +383,49 @@ static void hvac_periodic_update(uint8_t param)
 
 static void esp_zb_task(void *pvParameters)
 {
+    ESP_LOGI(TAG, "🚀 Starting Zigbee task...");
+    
     /* Initialize Zigbee stack */
+    ESP_LOGI(TAG, "📡 Initializing Zigbee stack as End Device...");
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
+    ESP_LOGI(TAG, "✅ Zigbee stack initialized");
     
     /* Create endpoint list */
+    ESP_LOGI(TAG, "📋 Creating endpoint list...");
     esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
     
     /* Create thermostat cluster list */
+    ESP_LOGI(TAG, "🌡️  Creating HVAC thermostat clusters...");
     esp_zb_cluster_list_t *esp_zb_hvac_clusters = esp_zb_zcl_cluster_list_create();
     
     /* Create Basic cluster */
+    ESP_LOGI(TAG, "  ➕ Adding Basic cluster (0x0000)...");
     esp_zb_basic_cluster_cfg_t basic_cfg = {
         .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
         .power_source = ESP_ZB_ZCL_BASIC_POWER_SOURCE_DEFAULT_VALUE,
     };
     esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    
+    /* Add optional Basic cluster attributes that Z2M expects */
+    uint8_t app_version = 1;
+    uint8_t stack_version = 2;
+    uint8_t hw_version = 1;
+    char date_code[] = "20251013";
+    char sw_build_id[] = "1.0.0";
+    
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &app_version);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &stack_version);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, date_code);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_build_id);
+    
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_hvac_clusters, esp_zb_basic_cluster, 
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_LOGI(TAG, "  ✅ Basic cluster added with extended attributes");
     
     /* Create Thermostat cluster */
+    ESP_LOGI(TAG, "  ➕ Adding Thermostat cluster (0x0201)...");
     esp_zb_thermostat_cluster_cfg_t thermostat_cfg = {
         .local_temperature = 25 * 100,                    // 25°C in centidegrees
         .occupied_cooling_setpoint = 24 * 100,            // 24°C default cooling setpoint
@@ -313,8 +437,10 @@ static void esp_zb_task(void *pvParameters)
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_LOGI(TAG, "  ✅ Thermostat cluster added");
     
     /* Create Fan Control cluster */
+    ESP_LOGI(TAG, "  ➕ Adding Fan Control cluster (0x0202)...");
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
         .fan_mode = 0x00,  // Off/Auto
         .fan_mode_sequence = 0x02,  // Low/Med/High
@@ -322,13 +448,18 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_attribute_list_t *esp_zb_fan_cluster = esp_zb_fan_control_cluster_create(&fan_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_fan_control_cluster(esp_zb_hvac_clusters, esp_zb_fan_cluster,
                                                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_LOGI(TAG, "  ✅ Fan Control cluster added");
     
     /* Add Identify cluster */
+    ESP_LOGI(TAG, "  ➕ Adding Identify cluster (0x0003)...");
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(esp_zb_hvac_clusters, 
                                                              esp_zb_identify_cluster_create(NULL),
                                                              ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_LOGI(TAG, "  ✅ Identify cluster added");
     
     /* Create HVAC endpoint */
+    ESP_LOGI(TAG, "🔌 Creating HVAC endpoint %d (Profile: 0x%04X, Device: 0x%04X)...", 
+             HA_ESP_HVAC_ENDPOINT, ESP_ZB_AF_HA_PROFILE_ID, ESP_ZB_HA_THERMOSTAT_DEVICE_ID);
     esp_zb_endpoint_config_t endpoint_config = {
         .endpoint = HA_ESP_HVAC_ENDPOINT,
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
@@ -336,19 +467,32 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0
     };
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_hvac_clusters, endpoint_config);
+    ESP_LOGI(TAG, "✅ Endpoint %d added to endpoint list", HA_ESP_HVAC_ENDPOINT);
     
     /* Add manufacturer info */
+    ESP_LOGI(TAG, "🏭 Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
         .manufacturer_name = ESP_MANUFACTURER_NAME,
         .model_identifier = ESP_MODEL_IDENTIFIER,
     };
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_HVAC_ENDPOINT, &info);
+    ESP_LOGI(TAG, "✅ Manufacturer info added");
     
     /* Register device */
+    ESP_LOGI(TAG, "📝 Registering Zigbee device...");
     esp_zb_device_register(esp_zb_ep_list);
+    ESP_LOGI(TAG, "✅ Device registered");
+    
+    ESP_LOGI(TAG, "🔧 Registering action handler...");
     esp_zb_core_action_handler_register(zb_action_handler);
+    ESP_LOGI(TAG, "✅ Action handler registered");
+    
+    ESP_LOGI(TAG, "📻 Setting Zigbee channel mask: 0x%08lX", (unsigned long)ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    
+    ESP_LOGI(TAG, "🚀 Starting Zigbee stack...");
     ESP_ERROR_CHECK(esp_zb_start(false));
+    ESP_LOGI(TAG, "✅ Zigbee stack started successfully");
     
     /* Start main Zigbee stack loop */
     esp_zb_stack_main_loop();

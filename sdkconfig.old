@@ -420,7 +420,7 @@ CONFIG_IDF_TOOLCHAIN_GCC=y
 CONFIG_IDF_TARGET_ARCH_RISCV=y
 CONFIG_IDF_TARGET_ARCH="riscv"
 CONFIG_IDF_TARGET="esp32c6"
-CONFIG_IDF_INIT_VERSION="$IDF_INIT_VERSION"
+CONFIG_IDF_INIT_VERSION="5.5.1"
 CONFIG_IDF_TARGET_ESP32C6=y
 CONFIG_IDF_FIRMWARE_CHIP_ID=0x000D
 
@@ -660,6 +660,18 @@ CONFIG_COMPILER_ORPHAN_SECTIONS_WARNING=y
 
 #
 # Component config
+#
+
+#
+# !!! MINIMAL_BUILD is enabled !!!
+#
+
+#
+# Only common components and those transitively required by the main component are listed
+#
+
+#
+# If a component configuration is missing, please add it to the main component's requirements
 #
 
 #
@@ -1904,17 +1916,6 @@ CONFIG_VFS_INITIALIZE_DEV_NULL=y
 # end of Virtual file system
 
 #
-# CMake Utilities
-#
-# CONFIG_CU_RELINKER_ENABLE is not set
-# CONFIG_CU_DIAGNOSTICS_COLOR_NEVER is not set
-CONFIG_CU_DIAGNOSTICS_COLOR_ALWAYS=y
-# CONFIG_CU_DIAGNOSTICS_COLOR_AUTO is not set
-# CONFIG_CU_GCC_LTO_ENABLE is not set
-# CONFIG_CU_GCC_STRING_1BYTE_ALIGN is not set
-# end of CMake Utilities
-
-#
 # Zigbee
 #
 CONFIG_ZB_ENABLED=y
@@ -1931,21 +1932,6 @@ CONFIG_ZB_RADIO_NATIVE=y
 
 # CONFIG_ZB_DEBUG_MODE is not set
 # end of Zigbee
-
-#
-# Bus Options
-#
-
-#
-# I2C Bus Options
-#
-CONFIG_I2C_BUS_DYNAMIC_CONFIG=y
-CONFIG_I2C_MS_TO_WAIT=200
-# CONFIG_I2C_BUS_BACKWARD_CONFIG is not set
-# CONFIG_I2C_BUS_SUPPORT_SOFTWARE is not set
-# CONFIG_I2C_BUS_REMOVE_NULL_MEM_ADDR is not set
-# end of I2C Bus Options
-# end of Bus Options
 # end of Component config
 
 # CONFIG_IDF_EXPERIMENTAL_FEATURES is not set
