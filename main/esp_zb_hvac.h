@@ -15,6 +15,9 @@
 #define ED_AGING_TIMEOUT                ESP_ZB_ED_AGING_TIMEOUT_64MIN        /* aging timeout of device */
 #define ED_KEEP_ALIVE                   3000                                 /* 3000 millisecond */
 #define HA_ESP_HVAC_ENDPOINT            1                                    /* HVAC thermostat endpoint */
+#define HA_ESP_ECO_ENDPOINT             2                                    /* Eco mode switch endpoint */
+#define HA_ESP_SWING_ENDPOINT           3                                    /* Swing mode switch endpoint */
+#define HA_ESP_DISPLAY_ENDPOINT         4                                    /* Display control switch endpoint */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
 /* Basic manufacturer information */

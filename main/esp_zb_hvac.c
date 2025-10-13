@@ -295,6 +295,39 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             }
         }
     }
+    /* Handle Eco Mode Switch - Endpoint 2 */
+    else if (message->info.dst_endpoint == HA_ESP_ECO_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "🌿 Eco mode %s", on_off ? "ON" : "OFF");
+                hvac_set_eco_mode(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
+    /* Handle Swing Switch - Endpoint 3 */
+    else if (message->info.dst_endpoint == HA_ESP_SWING_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "🌀 Swing mode %s", on_off ? "ON" : "OFF");
+                hvac_set_swing(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
+    /* Handle Display Switch - Endpoint 4 */
+    else if (message->info.dst_endpoint == HA_ESP_DISPLAY_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "📺 Display %s", on_off ? "ON" : "OFF");
+                hvac_set_display(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
     
     return ret;
 }
@@ -362,8 +395,26 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
                                  &local_temp, false);
     
-    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C", 
-             system_mode, state.target_temp_c);
+    /* Update Eco Mode switch state - Endpoint 2 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.eco_mode, false);
+    
+    /* Update Swing switch state - Endpoint 3 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_SWING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.swing_on, false);
+    
+    /* Update Display switch state - Endpoint 4 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_DISPLAY_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.display_on, false);
+    
+    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Eco=%d, Swing=%d, Display=%d", 
+             system_mode, state.target_temp_c, state.eco_mode, state.swing_on, state.display_on);
 }
 
 static void hvac_periodic_update(uint8_t param)
@@ -469,6 +520,69 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_hvac_clusters, endpoint_config);
     ESP_LOGI(TAG, "✅ Endpoint %d added to endpoint list", HA_ESP_HVAC_ENDPOINT);
     
+    /* Create Eco Mode Switch - Endpoint 2 */
+    ESP_LOGI(TAG, "🌿 Creating Eco Mode switch endpoint %d...", HA_ESP_ECO_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_eco_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_eco_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_eco_clusters, esp_zb_eco_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t eco_on_off_cfg = {
+        .on_off = false,
+    };
+    esp_zb_attribute_list_t *esp_zb_eco_on_off_cluster = esp_zb_on_off_cluster_create(&eco_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_eco_clusters, esp_zb_eco_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t eco_endpoint_config = {
+        .endpoint = HA_ESP_ECO_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_eco_clusters, eco_endpoint_config);
+    ESP_LOGI(TAG, "✅ Eco Mode switch endpoint %d added", HA_ESP_ECO_ENDPOINT);
+    
+    /* Create Swing Switch - Endpoint 3 */
+    ESP_LOGI(TAG, "🌀 Creating Swing switch endpoint %d...", HA_ESP_SWING_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_swing_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_swing_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_swing_clusters, esp_zb_swing_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t swing_on_off_cfg = {
+        .on_off = false,
+    };
+    esp_zb_attribute_list_t *esp_zb_swing_on_off_cluster = esp_zb_on_off_cluster_create(&swing_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_swing_clusters, esp_zb_swing_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t swing_endpoint_config = {
+        .endpoint = HA_ESP_SWING_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_swing_clusters, swing_endpoint_config);
+    ESP_LOGI(TAG, "✅ Swing switch endpoint %d added", HA_ESP_SWING_ENDPOINT);
+    
+    /* Create Display Switch - Endpoint 4 */
+    ESP_LOGI(TAG, "📺 Creating Display switch endpoint %d...", HA_ESP_DISPLAY_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_display_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_display_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_display_clusters, esp_zb_display_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t display_on_off_cfg = {
+        .on_off = true,  // Display defaults to ON
+    };
+    esp_zb_attribute_list_t *esp_zb_display_on_off_cluster = esp_zb_on_off_cluster_create(&display_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_display_clusters, esp_zb_display_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t display_endpoint_config = {
+        .endpoint = HA_ESP_DISPLAY_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_display_clusters, display_endpoint_config);
+    ESP_LOGI(TAG, "✅ Display switch endpoint %d added", HA_ESP_DISPLAY_ENDPOINT);
+    
     /* Add manufacturer info */
     ESP_LOGI(TAG, "🏭 Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
@@ -476,7 +590,10 @@ static void esp_zb_task(void *pvParameters)
         .model_identifier = ESP_MODEL_IDENTIFIER,
     };
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_HVAC_ENDPOINT, &info);
-    ESP_LOGI(TAG, "✅ Manufacturer info added");
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ECO_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_DISPLAY_ENDPOINT, &info);
+    ESP_LOGI(TAG, "✅ Manufacturer info added to all endpoints");
     
     /* Register device */
     ESP_LOGI(TAG, "📝 Registering Zigbee device...");
