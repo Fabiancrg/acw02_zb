@@ -1,30 +1,20 @@
 /*
- * SPDX-FileCopyrightText: 2021-2024 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2024 Espressif Systems (Shanghai) CO LTD
  *
- * SPDX-License-Identifier:  LicenseRef-Included
+ * SPDX-License-Identifier: LicenseRef-Included
  *
- * Zigbee HA_on_off_light Example
- *
- * This example code is in the Public Domain (or CC0 licensed, at your option.)
- *
- * Unless required by applicable law or agreed to in writing, this
- * software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
- * CONDITIONS OF ANY KIND, either express or implied.
+ * Zigbee HVAC Thermostat Header
  */
 
 #include "esp_zigbee_core.h"
-#include "light_driver.h"
+#include "hvac_driver.h"
 #include "zcl_utility.h"
 
 /* Zigbee configuration */
 #define INSTALLCODE_POLICY_ENABLE       false                                /* enable the install code policy for security */
 #define ED_AGING_TIMEOUT                ESP_ZB_ED_AGING_TIMEOUT_64MIN        /* aging timeout of device */
 #define ED_KEEP_ALIVE                   3000                                 /* 3000 millisecond */
-#define HA_ESP_LIGHT1_ENDPOINT          1                                    /* esp light bulb device endpoint, used to process light controlling commands */
-#define HA_ESP_LIGHT2_ENDPOINT          2                                    /* esp light bulb device endpoint 2, used to process light controlling commands */
-#define HA_ESP_BUTTON_ENDPOINT          3                                    /* esp button sensor endpoint */
-#define HA_ESP_BME280_ENDPOINT          4                                    /* esp BME280 environmental sensor endpoint */
-#define HA_ESP_RAIN_GAUGE_ENDPOINT      5                                    /* esp rain gauge sensor endpoint */
+#define HA_ESP_HVAC_ENDPOINT            1                                    /* HVAC thermostat endpoint */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
 /* Basic manufacturer information */
