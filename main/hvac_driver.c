@@ -108,56 +108,72 @@ static uint8_t hvac_encode_temperature(uint8_t temp_c)
 
 /**
  * @brief Build HVAC command frame
+ * 
+ * ACW02 Protocol Frame Structure (24 bytes):
+ * [0-1]  Header: 0x7A 0x7A
+ * [2-7]  Header: 0x21 0xD5 0x18 0x00 0x00 0xA1
+ * [8-11] Reserved: 0x00
+ * [12]   Power/Mode/Fan: (fan<<4) | (power<<3) | mode
+ * [13]   Temperature: encoded value (+ 0x40 for SILENT fan)
+ * [14]   Swing: (horizontal<<4) | vertical
+ * [15]   Options: eco(0x01) | night(0x02) | clean(0x10) | purifier(0x40) | display(0x80)
+ * [16]   Mute: 0x01 if muted
+ * [17-21] Reserved: 0x00
+ * [22-23] CRC16: MSB, LSB (computed over first 22 bytes)
  */
 static esp_err_t hvac_build_and_send_command(void)
 {
-    uint8_t frame[28] = {0};
+    uint8_t frame[24] = {0};
     
-    // Frame header
+    // Frame header (bytes 0-7)
     frame[0] = 0x7A;
     frame[1] = 0x7A;
     frame[2] = 0x21;
     frame[3] = 0xD5;
-    frame[4] = 0x1C;  // Frame length indicator for 28-byte command frame
+    frame[4] = 0x18;  // Frame length indicator for 24-byte command frame
     frame[5] = 0x00;
     frame[6] = 0x00;
-    frame[7] = 0xA3;  // Command type
+    frame[7] = 0xA1;  // Command type for control frame
     
-    // Power and mode
-    if (current_state.power_on) {
-        frame[8] = (uint8_t)current_state.mode;
+    // Bytes 8-11 are reserved (already zeroed)
+    
+    // Byte 12: Pack fan (4 bits), power (1 bit), mode (3 bits)
+    uint8_t fan_nibble = ((uint8_t)current_state.fan_speed & 0x0F) << 4;
+    uint8_t power_bit = (current_state.power_on ? 1 : 0) << 3;
+    uint8_t mode_bits = (uint8_t)current_state.mode & 0x07;
+    frame[12] = fan_nibble | power_bit | mode_bits;
+    
+    // Byte 13: Temperature encoding (with SILENT bit if needed)
+    uint8_t temp_base = hvac_encode_temperature(current_state.target_temp_c);
+    if (current_state.fan_speed == HVAC_FAN_SILENT) {
+        frame[13] = temp_base + 0x40;  // Add SILENT bit
     } else {
-        frame[8] = 0x00;  // Power off
+        frame[13] = temp_base;
     }
     
-    // Temperature encoding
-    frame[9] = hvac_encode_temperature(current_state.target_temp_c);
+    // Byte 14: Swing (horizontal in upper nibble, vertical in lower nibble)
+    uint8_t swing_v = current_state.swing_on ? 0x07 : 0x00;  // 0x07 = auto swing
+    uint8_t swing_h = 0x00;  // Horizontal swing (not used for now)
+    frame[14] = (swing_h << 4) | swing_v;
     
-    // Fan speed
-    frame[10] = (uint8_t)current_state.fan_speed;
-    
-    // Swing position
-    if (current_state.swing_on) {
-        frame[11] = (uint8_t)HVAC_SWING_AUTO;
-    } else {
-        frame[11] = (uint8_t)HVAC_SWING_STOP;
-    }
-    
-    // Options byte (eco, display, etc.)
+    // Byte 15: Options byte
     uint8_t options = 0x00;
     if (current_state.eco_mode) options |= 0x01;
-    if (current_state.display_on) options |= 0x02;
-    frame[12] = options;
+    // night mode: bit 0x02 (not implemented yet)
+    // clean mode: bit 0x10 (not implemented yet)
+    // purifier: bit 0x40 (not implemented yet)
+    if (current_state.display_on) options |= 0x80;
+    frame[15] = options;
     
-    // Fill remaining bytes with default values
-    for (int i = 13; i < 26; i++) {
-        frame[i] = 0x0A;
-    }
+    // Byte 16: Mute (0x00 = not muted)
+    frame[16] = 0x00;
     
-    // Calculate and append CRC
-    uint16_t crc = hvac_crc16(frame, 26);
-    frame[26] = (crc >> 8) & 0xFF;
-    frame[27] = crc & 0xFF;
+    // Bytes 17-21 are reserved (already zeroed)
+    
+    // Calculate CRC over first 22 bytes
+    uint16_t crc = hvac_crc16(frame, 22);
+    frame[22] = (crc >> 8) & 0xFF;  // CRC MSB
+    frame[23] = crc & 0xFF;          // CRC LSB
     
     return hvac_send_frame(frame, sizeof(frame));
 }
@@ -173,14 +189,29 @@ static esp_err_t hvac_send_frame(const uint8_t *data, size_t len)
         return ESP_FAIL;
     }
     
-    ESP_LOGI(TAG, "TX [%d bytes]: %02X %02X %02X %02X %02X %02X %02X %02X...", 
-             len, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]);
+    // Log full frame in hex for debugging
+    char hex_str[256] = {0};
+    char *ptr = hex_str;
+    for (size_t i = 0; i < len && i < 64; i++) {
+        ptr += sprintf(ptr, "%02X ", data[i]);
+    }
+    ESP_LOGI(TAG, "TX [%d bytes]: %s", len, hex_str);
     
     return ESP_OK;
 }
 
 /**
  * @brief Decode received HVAC state frame
+ * 
+ * ACW02 responds with 34-byte status frames:
+ * [0-1]  Header: 0x7A 0x7A
+ * [2-3]  Type marker: 0xD5 0x21 (status response)
+ * [10-11] Ambient temperature: integer, decimal
+ * [13]   Power/Mode/Fan: (fan<<4) | (power<<3) | mode
+ * [14]   Temperature: encoded value (bit 0x40 indicates SILENT fan)
+ * [15]   Swing: (horizontal<<4) | vertical
+ * [16]   Options: eco(0x01) | night(0x02) | from_remote(0x04) | display(0x08) | clean(0x10) | purifier(0x40) | display(0x80)
+ * [32-33] CRC16
  */
 static void hvac_decode_state(const uint8_t *frame, size_t len)
 {
@@ -195,6 +226,14 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         return;
     }
     
+    // Log full frame in hex for debugging
+    char hex_str[256] = {0};
+    char *ptr = hex_str;
+    for (size_t i = 0; i < len && i < 64; i++) {
+        ptr += sprintf(ptr, "%02X ", frame[i]);
+    }
+    ESP_LOGI(TAG, "RX [%d bytes]: %s", len, hex_str);
+    
     // Verify CRC
     uint16_t expected_crc = (frame[len - 2] << 8) | frame[len - 1];
     uint16_t computed_crc = hvac_crc16(frame, len - 2);
@@ -204,32 +243,96 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         return;
     }
     
-    ESP_LOGI(TAG, "RX [%d bytes]: Valid frame received", len);
+    ESP_LOGI(TAG, "RX: Valid frame received", len);
     
-    // Parse state information from longer frames (18, 28, or 34 bytes)
-    if (len >= 18) {
-        // Power state and mode
-        uint8_t mode_byte = frame[8];
-        if (mode_byte == 0x00) {
-            current_state.power_on = false;
+    // Handle 28-byte warning/error frames
+    if (len == 28 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD5 && frame[3] == 0x21) {
+        uint8_t warn = frame[10];
+        uint8_t fault = frame[12];
+        
+        if (fault != 0x00) {
+            ESP_LOGE(TAG, "AC FAULT: code=0x%02X", fault);
+            current_state.error = true;
+        } else if (warn != 0x00) {
+            ESP_LOGW(TAG, "AC WARNING: code=0x%02X", warn);
+            if (warn == 0x80) {
+                current_state.filter_dirty = true;
+            }
         } else {
-            current_state.power_on = true;
-            current_state.mode = (hvac_mode_t)mode_byte;
+            current_state.filter_dirty = false;
+            current_state.error = false;
         }
-        
-        // Temperature (if available in response)
-        if (len >= 28) {
-            // Ambient temperature might be in frame[13] or similar
-            // This depends on the actual HVAC protocol response format
-            // For now, we'll extract what we can
-            current_state.ambient_temp_c = 25; // Placeholder
-        }
-        
-        ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Temp=%d°C", 
-                 current_state.power_on ? "ON" : "OFF",
-                 current_state.mode,
-                 current_state.target_temp_c);
+        return;
     }
+    
+    // Parse 34-byte status frames
+    if (len != 34) {
+        ESP_LOGW(TAG, "Unexpected frame length (expected 34 bytes, got %d)", len);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Parsing 34-byte status frame...");
+    
+    // Byte 13: Power, Mode, Fan
+    uint8_t b13 = frame[13];
+    current_state.power_on = (b13 & 0x08) != 0;
+    current_state.mode = (hvac_mode_t)(b13 & 0x07);
+    current_state.fan_speed = (hvac_fan_t)((b13 >> 4) & 0x0F);
+    
+    // Byte 14: Temperature (with SILENT bit)
+    uint8_t temp_byte = frame[14];
+    bool silent_bit = (temp_byte & 0x40) != 0;
+    temp_byte &= 0x3F;  // Remove SILENT bit
+    
+    // Decode temperature (check if Fahrenheit or Celsius)
+    bool is_fahrenheit = false;
+    for (int i = 0; i < 28; i++) {
+        if (temp_byte == fahrenheit_encoding_table[i]) {
+            is_fahrenheit = true;
+            uint8_t temp_f = i + 61;
+            current_state.target_temp_c = (uint8_t)((temp_f - 32) * 5 / 9);
+            break;
+        }
+    }
+    
+    if (!is_fahrenheit) {
+        // Direct Celsius encoding
+        current_state.target_temp_c = 16 + temp_byte;
+    }
+    
+    // Override fan if SILENT bit is set
+    if (silent_bit) {
+        current_state.fan_speed = HVAC_FAN_SILENT;
+    }
+    
+    // Byte 15: Swing
+    uint8_t swing_raw = frame[15];
+    uint8_t swing_v = swing_raw & 0x0F;
+    current_state.swing_on = (swing_v != 0);
+    
+    // Byte 16: Options
+    uint8_t flags = frame[16];
+    current_state.eco_mode = (flags & 0x01) != 0;
+    current_state.display_on = (flags & 0x80) != 0;
+    
+    // Bytes 10-11: Ambient temperature
+    if (len >= 12) {
+        uint8_t temp_int = frame[10];
+        uint8_t temp_dec = frame[11];
+        current_state.ambient_temp_c = temp_int + (temp_dec / 10.0f);
+        
+        ESP_LOGI(TAG, "Ambient temp: %.1f°C (raw: %d.%d)", 
+                 current_state.ambient_temp_c, temp_int, temp_dec);
+    }
+    
+    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C, Eco=%s, Display=%s, Swing=%s", 
+             current_state.power_on ? "ON" : "OFF",
+             current_state.mode,
+             current_state.fan_speed,
+             current_state.target_temp_c,
+             current_state.eco_mode ? "ON" : "OFF",
+             current_state.display_on ? "ON" : "OFF",
+             current_state.swing_on ? "ON" : "OFF");
 }
 
 /**
