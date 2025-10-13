@@ -368,24 +368,13 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         } else if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
                 uint8_t fan_mode = *(uint8_t *)message->attribute.data.value;
-                ESP_LOGI(TAG, "Fan mode changed to %d", fan_mode);
+                ESP_LOGI(TAG, "Fan mode changed to 0x%02X", fan_mode);
                 
-                // Map Zigbee fan mode (7 levels) to HVAC fan speed (8 levels)
-                // Z2M: off, low, medium, high, on, auto, smart
-                // ACW02: AUTO, P20(Quiet), P40(Low-Med), P60(Med), P80(Med-High), P100(High), SILENT, TURBO
-                hvac_fan_t hvac_fan = HVAC_FAN_AUTO;
-                switch (fan_mode) {
-                    case 0: hvac_fan = HVAC_FAN_SILENT; break;    // Off → Quiet/Silent
-                    case 1: hvac_fan = HVAC_FAN_P20; break;       // Low → P20
-                    case 2: hvac_fan = HVAC_FAN_P60; break;       // Medium → P60
-                    case 3: hvac_fan = HVAC_FAN_P100; break;      // High → P100
-                    case 4: hvac_fan = HVAC_FAN_AUTO; break;      // On → Auto
-                    case 5: hvac_fan = HVAC_FAN_AUTO; break;      // Auto → Auto
-                    case 6: hvac_fan = HVAC_FAN_TURBO; break;     // Smart → Turbo
-                    default: hvac_fan = HVAC_FAN_AUTO; break;
-                }
+                // Z2M sends ACW02 protocol values directly (0x00-0x06)
+                // Just pass through to HVAC driver
+                hvac_fan_t hvac_fan = (hvac_fan_t)fan_mode;
                 
-                ESP_LOGI(TAG, "Mapped to HVAC fan: 0x%02X", hvac_fan);
+                ESP_LOGI(TAG, "Setting HVAC fan to: 0x%02X", hvac_fan);
                 hvac_set_fan_speed(hvac_fan);
                 esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
             }
@@ -510,20 +499,11 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  &state.display_on, false);
     
     /* Update Fan Mode - Endpoint 1 */
-    // Map HVAC fan speed (8 levels) to Zigbee fan mode (7 levels)
-    // ACW02: AUTO, P20(Quiet), P40(Low-Med), P60(Med), P80(Med-High), P100(High), SILENT, TURBO
-    // Z2M: off, low, medium, high, on, auto, smart
-    uint8_t zigbee_fan_mode = 5;  // Default to auto
-    switch (state.fan_speed) {
-        case HVAC_FAN_AUTO:   zigbee_fan_mode = 5; break;  // Auto → auto
-        case HVAC_FAN_P20:    zigbee_fan_mode = 1; break;  // P20(Quiet) → low
-        case HVAC_FAN_P40:    zigbee_fan_mode = 2; break;  // P40(Low-Med) → medium
-        case HVAC_FAN_P60:    zigbee_fan_mode = 2; break;  // P60(Med) → medium
-        case HVAC_FAN_P80:    zigbee_fan_mode = 3; break;  // P80(Med-High) → high
-        case HVAC_FAN_P100:   zigbee_fan_mode = 3; break;  // P100(High) → high
-        case HVAC_FAN_SILENT: zigbee_fan_mode = 0; break;  // Silent(Quiet) → off
-        case HVAC_FAN_TURBO:  zigbee_fan_mode = 6; break;  // Turbo → smart
-        default:              zigbee_fan_mode = 5; break;  // Default → auto
+    // Report ACW02 protocol values directly to Zigbee
+    // Z2M converter will translate to custom names (quiet/low/low-med/etc)
+    uint8_t zigbee_fan_mode = state.fan_speed;  // Pass through ACW02 value
+    if (state.fan_speed == HVAC_FAN_TURBO) {
+        zigbee_fan_mode = HVAC_FAN_SILENT;  // Map TURBO to SILENT for now
     }
     
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,

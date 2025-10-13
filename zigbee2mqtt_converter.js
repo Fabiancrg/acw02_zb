@@ -18,8 +18,31 @@ const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
 const e = exposes.presets;
 
-// Custom converters for named switches
+// Custom converters for named switches and custom fan modes
 const tzLocal = {
+    fan_mode: {
+        key: ['fan_mode'],
+        convertSet: async (entity, key, value, meta) => {
+            // Map custom fan mode names to ACW02 protocol values
+            const fanModeMap = {
+                'quiet': 0x06,   // SILENT
+                'low': 0x01,     // P20
+                'low-med': 0x02, // P40
+                'medium': 0x03,  // P60
+                'med-high': 0x04,// P80
+                'high': 0x05,    // P100
+                'auto': 0x00,    // AUTO
+            };
+            const numericValue = fanModeMap[value];
+            if (numericValue !== undefined) {
+                await entity.write('hvacFanCtrl', {'fanMode': numericValue});
+                return {state: {fan_mode: value}};
+            }
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('hvacFanCtrl', ['fanMode']);
+        },
+    },
     eco_mode: {
         key: ['eco_mode'],
         convertSet: async (entity, key, value, meta) => {
@@ -68,6 +91,26 @@ const tzLocal = {
 };
 
 const fzLocal = {
+    fan_mode: {
+        cluster: 'hvacFanCtrl',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.hasOwnProperty('fanMode')) {
+                // Map ACW02 protocol values to custom fan mode names
+                const fanModeMap = {
+                    0x00: 'auto',     // AUTO
+                    0x01: 'low',      // P20
+                    0x02: 'low-med',  // P40
+                    0x03: 'medium',   // P60
+                    0x04: 'med-high', // P80
+                    0x05: 'high',     // P100
+                    0x06: 'quiet',    // SILENT
+                    0x0D: 'quiet',    // TURBO (map to quiet for now)
+                };
+                return {fan_mode: fanModeMap[msg.data.fanMode]};
+            }
+        },
+    },
     eco_mode: {
         cluster: 'genOnOff',
         type: ['attributeReport', 'readResponse'],
@@ -106,7 +149,7 @@ const definition = {
     // Supported features
     fromZigbee: [
         fz.thermostat,
-        fz.fan,
+        fzLocal.fan_mode,
         fzLocal.eco_mode,
         fzLocal.swing_mode,
         fzLocal.display,
@@ -116,7 +159,7 @@ const definition = {
         tz.thermostat_occupied_heating_setpoint,
         tz.thermostat_occupied_cooling_setpoint,
         tz.thermostat_system_mode,
-        tz.fan_mode,
+        tzLocal.fan_mode,
         tzLocal.eco_mode,
         tzLocal.swing_mode,
         tzLocal.display,
@@ -131,8 +174,8 @@ const definition = {
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
             .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
             .withEndpoint('ep1'),
-        exposes.enum('fan_mode', exposes.access.ALL, ['off', 'low', 'medium', 'high', 'on', 'auto', 'smart'])
-            .withDescription('Fan speed: off=Off, low=Quiet(P20), medium=Low-Med(P40)/Medium(P60), high=Med-High(P80)/High(P100), auto=Auto, smart=Turbo')
+        exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
+            .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
             .withEndpoint('ep1'),
         exposes.binary('eco_mode', exposes.access.ALL, 'ON', 'OFF')
             .withDescription('Eco mode')
@@ -173,18 +216,11 @@ const definition = {
         ]);
         
         // Configure reporting for thermostat attributes
+        // Only localTemp (current temperature) is reportable
         await reporting.thermostatTemperature(endpoint1);
-        await reporting.thermostatSystemMode(endpoint1);
-        await reporting.thermostatOccupiedHeatingSetpoint(endpoint1);
-        await reporting.thermostatOccupiedCoolingSetpoint(endpoint1);
-        
-        // Configure reporting for fan mode
-        await endpoint1.configureReporting('hvacFanCtrl', [{
-            attribute: 'fanMode',
-            minimumReportInterval: 0,
-            maximumReportInterval: 3600,
-            reportableChange: 1,
-        }]);
+        // Note: systemMode, occupiedHeatingSetpoint, occupiedCoolingSetpoint, and fanMode are NOT reportable
+        // These are writable/control attributes, not sensor readings
+        // Z2M will poll these when needed
         
         // Bind and configure endpoint 2 (Eco mode)
         await reporting.bind(endpoint2, coordinatorEndpoint, ['genOnOff']);
@@ -197,8 +233,6 @@ const definition = {
         // Bind and configure endpoint 4 (Display)
         await reporting.bind(endpoint4, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint4);
-        
-        logger.info('ACW02 HVAC Thermostat with switches configured successfully');
     },
 };
 
