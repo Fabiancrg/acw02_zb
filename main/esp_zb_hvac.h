@@ -6,6 +6,9 @@
  * Zigbee HVAC Thermostat Header
  */
 
+#ifndef ESP_ZB_HVAC_H
+#define ESP_ZB_HVAC_H
+
 #include "esp_zigbee_core.h"
 #include "hvac_driver.h"
 #include "zcl_utility.h"
@@ -18,6 +21,10 @@
 #define HA_ESP_ECO_ENDPOINT             2                                    /* Eco mode switch endpoint */
 #define HA_ESP_SWING_ENDPOINT           3                                    /* Swing mode switch endpoint */
 #define HA_ESP_DISPLAY_ENDPOINT         4                                    /* Display control switch endpoint */
+#define HA_ESP_NIGHT_ENDPOINT           5                                    /* Night mode switch endpoint */
+#define HA_ESP_PURIFIER_ENDPOINT        6                                    /* Purifier switch endpoint */
+#define HA_ESP_CLEAN_ENDPOINT           7                                    /* Clean status binary sensor endpoint */
+#define HA_ESP_MUTE_ENDPOINT            8                                    /* Mute switch endpoint */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
 /* Button configuration */
@@ -46,3 +53,5 @@
     {                                                           \
         .host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE,   \
     }
+
+#endif

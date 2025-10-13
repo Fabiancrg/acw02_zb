@@ -88,6 +88,51 @@ const tzLocal = {
             await entity.read('genOnOff', ['onOff']);
         },
     },
+    night_mode: {
+        key: ['night_mode'],
+        convertSet: async (entity, key, value, meta) => {
+            // Use command instead of write
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
+            return {state: {night_mode: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
+    purifier: {
+        key: ['purifier'],
+        convertSet: async (entity, key, value, meta) => {
+            // Use command instead of write
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
+            return {state: {purifier: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
+    mute: {
+        key: ['mute'],
+        convertSet: async (entity, key, value, meta) => {
+            // Use command instead of write
+            if (value === 'ON') {
+                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
+            } else {
+                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
+            }
+            return {state: {mute: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
 };
 
 const fzLocal = {
@@ -138,6 +183,42 @@ const fzLocal = {
             }
         },
     },
+    night_mode: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 5) {
+                return {night_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    purifier: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 6) {
+                return {purifier: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    clean_status: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 7) {
+                return {clean_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    mute: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 8) {
+                return {mute: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
 };
 
 const definition = {
@@ -153,6 +234,10 @@ const definition = {
         fzLocal.eco_mode,
         fzLocal.swing_mode,
         fzLocal.display,
+        fzLocal.night_mode,
+        fzLocal.purifier,
+        fzLocal.clean_status,
+        fzLocal.mute,
     ],
     toZigbee: [
         tz.thermostat_local_temperature,
@@ -163,6 +248,10 @@ const definition = {
         tzLocal.eco_mode,
         tzLocal.swing_mode,
         tzLocal.display,
+        tzLocal.night_mode,
+        tzLocal.purifier,
+        tzLocal.mute,
+        // Note: clean_status is read-only (from AC), so no toZigbee converter needed
     ],
     
     // Expose controls in the UI
@@ -186,18 +275,38 @@ const definition = {
         exposes.binary('display', exposes.access.ALL, 'ON', 'OFF')
             .withDescription('Display on/off')
             .withEndpoint('ep4'),
+        exposes.binary('night_mode', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Night mode (sleep mode with adjusted settings)')
+            .withEndpoint('ep5'),
+        exposes.binary('purifier', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Air purifier/ionizer')
+            .withEndpoint('ep6'),
+        exposes.binary('clean_status', exposes.access.STATE_GET, 'ON', 'OFF')
+            .withDescription('Filter cleaning status (read-only from AC)')
+            .withEndpoint('ep7'),
+        exposes.binary('mute', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Mute beep sounds on AC')
+            .withEndpoint('ep8'),
     ],
     
     // Map endpoints with descriptive names
     endpoint: (device) => {
         return {
-            'ep1': 1,        // Main thermostat
-            'ep2': 2,        // Eco mode switch
-            'ep3': 3,        // Swing switch
-            'ep4': 4,        // Display switch
-            'eco_mode': 2,   // Alternative name for eco mode
-            'swing_mode': 3, // Alternative name for swing mode
-            'display': 4,    // Alternative name for display
+            'ep1': 1,          // Main thermostat
+            'ep2': 2,          // Eco mode switch
+            'ep3': 3,          // Swing switch
+            'ep4': 4,          // Display switch
+            'ep5': 5,          // Night mode switch
+            'ep6': 6,          // Purifier switch
+            'ep7': 7,          // Clean status binary sensor
+            'ep8': 8,          // Mute switch
+            'eco_mode': 2,     // Alternative name for eco mode
+            'swing_mode': 3,   // Alternative name for swing mode
+            'display': 4,      // Alternative name for display
+            'night_mode': 5,   // Alternative name for night mode
+            'purifier': 6,     // Alternative name for purifier
+            'clean_status': 7, // Alternative name for clean status
+            'mute': 8,         // Alternative name for mute
         };
     },
     
@@ -233,7 +342,30 @@ const definition = {
         // Bind and configure endpoint 4 (Display)
         await reporting.bind(endpoint4, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint4);
+        
+        // Bind and configure endpoint 5 (Night mode)
+        const endpoint5 = device.getEndpoint(5);
+        await reporting.bind(endpoint5, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint5);
+        
+        // Bind and configure endpoint 6 (Purifier)
+        const endpoint6 = device.getEndpoint(6);
+        await reporting.bind(endpoint6, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint6);
+        
+        // Bind and configure endpoint 7 (Clean status - read-only)
+        const endpoint7 = device.getEndpoint(7);
+        await reporting.bind(endpoint7, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint7);
+        
+        // Bind and configure endpoint 8 (Mute)
+        const endpoint8 = device.getEndpoint(8);
+        await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint8);
     },
 };
+
+module.exports = definition;
+
 
 module.exports = definition;
