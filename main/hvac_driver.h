@@ -56,8 +56,12 @@ typedef struct {
     uint8_t target_temp_c;  // Temperature in Celsius (16-31)
     uint8_t ambient_temp_c; // Current room temperature
     bool eco_mode;
+    bool night_mode;        // Night mode (sleep mode)
     bool display_on;
     bool swing_on;
+    bool purifier_on;       // Air purifier/ionizer
+    bool clean_status;      // Filter cleaning status (read-only from AC)
+    bool mute_on;           // Mute (silent commands)
     hvac_fan_t fan_speed;
     bool filter_dirty;
     bool error;
@@ -137,6 +141,37 @@ esp_err_t hvac_set_display(bool display_on);
  * @return ESP_OK on success
  */
 esp_err_t hvac_set_swing(bool swing_on);
+
+/**
+ * @brief Set night mode (sleep mode)
+ * 
+ * @param night_on true to enable night mode
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_night_mode(bool night_on);
+
+/**
+ * @brief Set purifier mode (air ionizer)
+ * 
+ * @param purifier_on true to enable purifier
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_purifier(bool purifier_on);
+
+/**
+ * @brief Set mute mode (silent commands)
+ * 
+ * @param mute_on true to mute beep sounds
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_mute(bool mute_on);
+
+/**
+ * @brief Get clean status (filter cleaning indicator)
+ * 
+ * @return true if filter needs cleaning
+ */
+bool hvac_get_clean_status(void);
 
 /**
  * @brief Set fan speed

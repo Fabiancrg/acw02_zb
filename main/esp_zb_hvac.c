@@ -413,6 +413,44 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             }
         }
     }
+    /* Handle Night Mode Switch - Endpoint 5 */
+    else if (message->info.dst_endpoint == HA_ESP_NIGHT_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[NIGHT] Mode %s", on_off ? "ON" : "OFF");
+                hvac_set_night_mode(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
+    /* Handle Purifier Switch - Endpoint 6 */
+    else if (message->info.dst_endpoint == HA_ESP_PURIFIER_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[PURIFIER] %s", on_off ? "ON" : "OFF");
+                hvac_set_purifier(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
+    /* Clean Status Binary Sensor - Endpoint 7 (Read-Only, no commands) */
+    else if (message->info.dst_endpoint == HA_ESP_CLEAN_ENDPOINT) {
+        // Clean status is read-only from AC, no commands accepted
+        ESP_LOGW(TAG, "[CLEAN] Clean status is read-only");
+    }
+    /* Handle Mute Switch - Endpoint 8 */
+    else if (message->info.dst_endpoint == HA_ESP_MUTE_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[MUTE] %s", on_off ? "ON" : "OFF");
+                hvac_set_mute(on_off);
+                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+            }
+        }
+    }
     
     return ret;
 }
@@ -498,6 +536,30 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
                                  &state.display_on, false);
     
+    /* Update Night Mode switch state - Endpoint 5 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_NIGHT_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.night_mode, false);
+    
+    /* Update Purifier switch state - Endpoint 6 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_PURIFIER_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.purifier_on, false);
+    
+    /* Update Clean status binary sensor - Endpoint 7 (Read-Only) */
+    esp_zb_zcl_set_attribute_val(HA_ESP_CLEAN_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.clean_status, false);
+    
+    /* Update Mute switch state - Endpoint 8 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_MUTE_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.mute_on, false);
+    
     /* Update Fan Mode - Endpoint 1 */
     // Report ACW02 protocol values directly to Zigbee
     // Z2M converter will translate to custom names (quiet/low/low-med/etc)
@@ -511,8 +573,11 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
                                  &zigbee_fan_mode, false);
     
-    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Eco=%d, Swing=%d, Display=%d, Fan=%d", 
-             system_mode, state.target_temp_c, state.eco_mode, state.swing_on, state.display_on, zigbee_fan_mode);
+    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Fan=%d", 
+             system_mode, state.target_temp_c, zigbee_fan_mode);
+    ESP_LOGI(TAG, "  Switches: Eco=%d, Night=%d, Display=%d, Purifier=%d, Clean=%d, Swing=%d, Mute=%d", 
+             state.eco_mode, state.night_mode, state.display_on, state.purifier_on, 
+             state.clean_status, state.swing_on, state.mute_on);
 }
 
 static void hvac_periodic_update(uint8_t param)
@@ -681,6 +746,90 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_display_clusters, display_endpoint_config);
     ESP_LOGI(TAG, "[OK] Display switch endpoint %d added", HA_ESP_DISPLAY_ENDPOINT);
     
+    /* Create Night Mode Switch - Endpoint 5 */
+    ESP_LOGI(TAG, "[NIGHT] Creating Night Mode switch endpoint %d...", HA_ESP_NIGHT_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_night_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_night_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_night_clusters, esp_zb_night_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t night_on_off_cfg = {
+        .on_off = false,
+    };
+    esp_zb_attribute_list_t *esp_zb_night_on_off_cluster = esp_zb_on_off_cluster_create(&night_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_night_clusters, esp_zb_night_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t night_endpoint_config = {
+        .endpoint = HA_ESP_NIGHT_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_night_clusters, night_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Night Mode switch endpoint %d added", HA_ESP_NIGHT_ENDPOINT);
+    
+    /* Create Purifier Switch - Endpoint 6 */
+    ESP_LOGI(TAG, "[PURIF] Creating Purifier switch endpoint %d...", HA_ESP_PURIFIER_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_purifier_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_purifier_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_purifier_clusters, esp_zb_purifier_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t purifier_on_off_cfg = {
+        .on_off = false,
+    };
+    esp_zb_attribute_list_t *esp_zb_purifier_on_off_cluster = esp_zb_on_off_cluster_create(&purifier_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_purifier_clusters, esp_zb_purifier_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t purifier_endpoint_config = {
+        .endpoint = HA_ESP_PURIFIER_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_purifier_clusters, purifier_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Purifier switch endpoint %d added", HA_ESP_PURIFIER_ENDPOINT);
+    
+    /* Create Clean Status Binary Sensor - Endpoint 7 */
+    ESP_LOGI(TAG, "[CLEAN] Creating Clean status binary sensor endpoint %d...", HA_ESP_CLEAN_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_clean_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_clean_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_clean_clusters, esp_zb_clean_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t clean_on_off_cfg = {
+        .on_off = false,  // Clean status defaults to false (no cleaning needed)
+    };
+    esp_zb_attribute_list_t *esp_zb_clean_on_off_cluster = esp_zb_on_off_cluster_create(&clean_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_clean_clusters, esp_zb_clean_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t clean_endpoint_config = {
+        .endpoint = HA_ESP_CLEAN_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,  // Binary sensor as on/off device
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_clean_clusters, clean_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Clean status binary sensor endpoint %d added", HA_ESP_CLEAN_ENDPOINT);
+    
+    /* Create Mute Switch - Endpoint 8 */
+    ESP_LOGI(TAG, "[MUTE] Creating Mute switch endpoint %d...", HA_ESP_MUTE_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_mute_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_mute_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_mute_clusters, esp_zb_mute_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t mute_on_off_cfg = {
+        .on_off = false,  // Mute defaults to OFF
+    };
+    esp_zb_attribute_list_t *esp_zb_mute_on_off_cluster = esp_zb_on_off_cluster_create(&mute_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_mute_clusters, esp_zb_mute_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t mute_endpoint_config = {
+        .endpoint = HA_ESP_MUTE_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_mute_clusters, mute_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Mute switch endpoint %d added", HA_ESP_MUTE_ENDPOINT);
+    
     /* Add manufacturer info */
     ESP_LOGI(TAG, "[INFO] Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
@@ -691,6 +840,10 @@ static void esp_zb_task(void *pvParameters)
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ECO_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_DISPLAY_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_NIGHT_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_PURIFIER_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_CLEAN_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_MUTE_ENDPOINT, &info);
     ESP_LOGI(TAG, "[OK] Manufacturer info added to all endpoints");
     
     /* Register device */

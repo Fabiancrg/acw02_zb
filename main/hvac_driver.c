@@ -21,8 +21,12 @@ static hvac_state_t current_state = {
     .target_temp_c = 24,
     .ambient_temp_c = 25,
     .eco_mode = false,
+    .night_mode = false,
     .display_on = true,
     .swing_on = false,
+    .purifier_on = false,
+    .clean_status = false,
+    .mute_on = false,
     .fan_speed = HVAC_FAN_AUTO,
     .filter_dirty = false,
     .error = false,
@@ -158,15 +162,15 @@ static esp_err_t hvac_build_and_send_command(void)
     
     // Byte 15: Options byte
     uint8_t options = 0x00;
-    if (current_state.eco_mode) options |= 0x01;
-    // night mode: bit 0x02 (not implemented yet)
-    // clean mode: bit 0x10 (not implemented yet)
-    // purifier: bit 0x40 (not implemented yet)
-    if (current_state.display_on) options |= 0x80;
+    if (current_state.eco_mode) options |= 0x01;      // Bit 0: ECO mode
+    if (current_state.night_mode) options |= 0x02;    // Bit 1: NIGHT mode
+    // clean mode: bit 0x10 (READ from AC, not sent TO AC)
+    if (current_state.purifier_on) options |= 0x40;   // Bit 6: PURIFIER mode
+    if (current_state.display_on) options |= 0x80;    // Bit 7: DISPLAY on/off
     frame[15] = options;
     
-    // Byte 16: Mute (0x00 = not muted)
-    frame[16] = 0x00;
+    // Byte 16: Mute
+    frame[16] = current_state.mute_on ? 0x01 : 0x00;  // Bit 0: MUTE (silent command)
     
     // Bytes 17-21 are reserved (already zeroed)
     
@@ -312,8 +316,11 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     
     // Byte 16: Options
     uint8_t flags = frame[16];
-    current_state.eco_mode = (flags & 0x01) != 0;
-    current_state.display_on = (flags & 0x80) != 0;
+    current_state.eco_mode = (flags & 0x01) != 0;       // Bit 0: ECO mode
+    current_state.night_mode = (flags & 0x02) != 0;     // Bit 1: NIGHT mode
+    current_state.clean_status = (flags & 0x10) != 0;   // Bit 4: CLEAN status (from AC)
+    current_state.purifier_on = (flags & 0x40) != 0;    // Bit 6: PURIFIER mode
+    current_state.display_on = (flags & 0x80) != 0;     // Bit 7: DISPLAY on/off
     
     // Bytes 10-11: Ambient temperature
     if (len >= 12) {
@@ -325,13 +332,17 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
                  current_state.ambient_temp_c, temp_int, temp_dec);
     }
     
-    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C, Eco=%s, Display=%s, Swing=%s", 
+    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C", 
              current_state.power_on ? "ON" : "OFF",
              current_state.mode,
              current_state.fan_speed,
-             current_state.target_temp_c,
+             current_state.target_temp_c);
+    ESP_LOGI(TAG, "  Options: Eco=%s, Night=%s, Display=%s, Purifier=%s, Clean=%s, Swing=%s", 
              current_state.eco_mode ? "ON" : "OFF",
+             current_state.night_mode ? "ON" : "OFF",
              current_state.display_on ? "ON" : "OFF",
+             current_state.purifier_on ? "ON" : "OFF",
+             current_state.clean_status ? "YES" : "NO",
              current_state.swing_on ? "ON" : "OFF");
 }
 
@@ -586,4 +597,42 @@ esp_err_t hvac_send_keepalive(void)
 {
     ESP_LOGD(TAG, "Sending keepalive");
     return hvac_send_frame(keepalive_frame, sizeof(keepalive_frame));
+}
+
+/**
+ * @brief Set night mode
+ */
+esp_err_t hvac_set_night_mode(bool night_on)
+{
+    ESP_LOGI(TAG, "Setting night mode: %s", night_on ? "ON" : "OFF");
+    current_state.night_mode = night_on;
+    return hvac_build_and_send_command();
+}
+
+/**
+ * @brief Set purifier mode
+ */
+esp_err_t hvac_set_purifier(bool purifier_on)
+{
+    ESP_LOGI(TAG, "Setting purifier: %s", purifier_on ? "ON" : "OFF");
+    current_state.purifier_on = purifier_on;
+    return hvac_build_and_send_command();
+}
+
+/**
+ * @brief Set mute mode
+ */
+esp_err_t hvac_set_mute(bool mute_on)
+{
+    ESP_LOGI(TAG, "Setting mute: %s", mute_on ? "ON" : "OFF");
+    current_state.mute_on = mute_on;
+    return hvac_build_and_send_command();
+}
+
+/**
+ * @brief Get clean status
+ */
+bool hvac_get_clean_status(void)
+{
+    return current_state.clean_status;
 }
