@@ -411,8 +411,8 @@ static void esp_zb_task(void *pvParameters)
     uint8_t app_version = 1;
     uint8_t stack_version = 2;
     uint8_t hw_version = 1;
-    char date_code[] = "20251013";
-    char sw_build_id[] = "1.0.0";
+    char date_code[] = "\x08""20251013";     // Length-prefixed: 8 chars = "20251013"
+    char sw_build_id[] = "\x06""v1.0.0";     // Length-prefixed: 6 chars = "v1.0.0"
     
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &app_version);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &stack_version);
