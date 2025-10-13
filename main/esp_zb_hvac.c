@@ -505,8 +505,28 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
                                  &state.display_on, false);
     
-    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Eco=%d, Swing=%d, Display=%d", 
-             system_mode, state.target_temp_c, state.eco_mode, state.swing_on, state.display_on);
+    /* Update Fan Mode - Endpoint 1 */
+    // Map HVAC fan speed to Zigbee fan mode
+    uint8_t zigbee_fan_mode = 5;  // Default to auto
+    switch (state.fan_speed) {
+        case HVAC_FAN_AUTO:   zigbee_fan_mode = 5; break;  // Auto
+        case HVAC_FAN_P20:    zigbee_fan_mode = 1; break;  // Low
+        case HVAC_FAN_P40:    zigbee_fan_mode = 2; break;  // Medium
+        case HVAC_FAN_P60:    zigbee_fan_mode = 3; break;  // High
+        case HVAC_FAN_P80:    zigbee_fan_mode = 3; break;  // High
+        case HVAC_FAN_P100:   zigbee_fan_mode = 6; break;  // Smart/Max
+        case HVAC_FAN_SILENT: zigbee_fan_mode = 1; break;  // Low
+        case HVAC_FAN_TURBO:  zigbee_fan_mode = 6; break;  // Smart/Max
+        default:              zigbee_fan_mode = 5; break;  // Auto
+    }
+    
+    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
+                                 &zigbee_fan_mode, false);
+    
+    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Eco=%d, Swing=%d, Display=%d, Fan=%d", 
+             system_mode, state.target_temp_c, state.eco_mode, state.swing_on, state.display_on, zigbee_fan_mode);
 }
 
 static void hvac_periodic_update(uint8_t param)
