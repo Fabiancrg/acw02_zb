@@ -41,12 +41,12 @@ static void factory_reset_device(uint8_t param);
 /* Factory reset function */
 static void factory_reset_device(uint8_t param)
 {
-    ESP_LOGW(TAG, "🔄 Performing factory reset...");
+    ESP_LOGW(TAG, "[RESET] Performing factory reset...");
     
     /* Perform factory reset - this will clear all Zigbee network settings */
     esp_zb_factory_reset();
     
-    ESP_LOGI(TAG, "✅ Factory reset successful - device will restart");
+    ESP_LOGI(TAG, "[RESET] Factory reset successful - device will restart");
     
     /* Restart the device after a short delay */
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -60,8 +60,8 @@ static void button_task(void *arg)
     bool button_pressed = false;
     bool long_press_triggered = false;
     
-    ESP_LOGI(TAG, "🔘 Button monitoring started on GPIO%d", BOOT_BUTTON_GPIO);
-    ESP_LOGI(TAG, "📋 Press and hold for %d seconds to factory reset", BUTTON_LONG_PRESS_TIME_MS / 1000);
+    ESP_LOGI(TAG, "[BUTTON] Monitoring started on GPIO%d", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "[BUTTON] Press and hold for %d seconds to factory reset", BUTTON_LONG_PRESS_TIME_MS / 1000);
     
     while (1) {
         int button_level = gpio_get_level(BOOT_BUTTON_GPIO);
@@ -72,14 +72,14 @@ static void button_task(void *arg)
                 button_pressed = true;
                 long_press_triggered = false;
                 press_start_time = xTaskGetTickCount();
-                ESP_LOGI(TAG, "🔘 Boot button pressed");
+                ESP_LOGI(TAG, "[BUTTON] Boot button pressed");
             } else {
                 // Button still pressed - check for long press
                 uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
                 
                 if (press_duration >= BUTTON_LONG_PRESS_TIME_MS && !long_press_triggered) {
                     long_press_triggered = true;
-                    ESP_LOGW(TAG, "🔄 Long press detected! Triggering factory reset...");
+                    ESP_LOGW(TAG, "[BUTTON] Long press detected! Triggering factory reset...");
                     
                     // Schedule factory reset in Zigbee context
                     esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
@@ -91,7 +91,7 @@ static void button_task(void *arg)
                 uint32_t press_duration = pdTICKS_TO_MS(xTaskGetTickCount() - press_start_time);
                 
                 if (!long_press_triggered) {
-                    ESP_LOGI(TAG, "🔘 Boot button released (held for %lu ms)", press_duration);
+                    ESP_LOGI(TAG, "[BUTTON] Released (held for %lu ms)", press_duration);
                 }
                 
                 button_pressed = false;
@@ -105,6 +105,8 @@ static void button_task(void *arg)
 /* Initialize boot button */
 static void button_init(void)
 {
+    ESP_LOGI(TAG, "[INIT] Configuring GPIO%d for button...", BOOT_BUTTON_GPIO);
+    
     gpio_config_t io_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT,
@@ -115,38 +117,48 @@ static void button_init(void)
     
     esp_err_t ret = gpio_config(&io_conf);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure boot button GPIO");
+        ESP_LOGE(TAG, "[ERROR] Failed to configure boot button GPIO: %s", esp_err_to_name(ret));
         return;
     }
+    ESP_LOGI(TAG, "[OK] GPIO configured");
     
     // Create button monitoring task
+    ESP_LOGI(TAG, "[INIT] Creating button monitoring task...");
     BaseType_t task_ret = xTaskCreate(button_task, "button_task", 2048, NULL, 5, NULL);
     if (task_ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create button task");
+        ESP_LOGE(TAG, "[ERROR] Failed to create button task");
         return;
     }
+    ESP_LOGI(TAG, "[OK] Button task created");
     
-    ESP_LOGI(TAG, "✅ Boot button initialized on GPIO%d", BOOT_BUTTON_GPIO);
+    ESP_LOGI(TAG, "[OK] Boot button fully initialized on GPIO%d", BOOT_BUTTON_GPIO);
 }
 
 static esp_err_t deferred_driver_init(void)
 {
-    ESP_LOGI(TAG, "🔧 Starting deferred driver initialization...");
+    ESP_LOGI(TAG, "[INIT] Starting deferred driver initialization...");
     
     /* Initialize boot button for factory reset */
+    ESP_LOGI(TAG, "[INIT] Initializing boot button...");
     button_init();
+    ESP_LOGI(TAG, "[INIT] Boot button initialization complete");
     
     /* Initialize HVAC UART driver */
-    ESP_LOGI(TAG, "🔧 Initializing HVAC UART driver...");
-    esp_err_t ret = hvac_driver_init();
+    ESP_LOGI(TAG, "[INIT] Initializing HVAC UART driver...");
+    esp_err_t ret = ESP_OK;
+    
+    // Wrap HVAC init in try-catch equivalent to prevent crashes
+    ret = hvac_driver_init();
+    
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ Failed to initialize HVAC driver (UART connection issue?)");
-        ESP_LOGW(TAG, "⚠️  Continuing without HVAC - endpoints will still be created");
+        ESP_LOGE(TAG, "[ERROR] Failed to initialize HVAC driver: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "[WARN] Continuing without HVAC - endpoints will still be created");
         // Don't fail - we can still expose Zigbee endpoints without HVAC connected
     } else {
-        ESP_LOGI(TAG, "✅ HVAC driver initialized successfully");
+        ESP_LOGI(TAG, "[OK] HVAC driver initialized successfully");
     }
     
+    ESP_LOGI(TAG, "[INIT] Deferred initialization complete");
     return ESP_OK;
 }
 
@@ -164,51 +176,87 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
-        ESP_LOGI(TAG, "Initialize Zigbee stack");
+        ESP_LOGI(TAG, "[JOIN] Initialize Zigbee stack");
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
         
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
+        ESP_LOGI(TAG, "[JOIN] Device first start - factory new device");
         if (err_status == ESP_OK) {
-            ESP_LOGI(TAG, "Deferred driver initialization %s", 
-                    deferred_driver_init() ? "failed" : "successful");
-            ESP_LOGI(TAG, "Device started up in %s factory-reset mode", 
-                    esp_zb_bdb_is_factory_new() ? "" : "non");
+            ESP_LOGI(TAG, "[JOIN] Calling deferred driver initialization...");
+            esp_err_t init_ret = deferred_driver_init();
+            ESP_LOGI(TAG, "[JOIN] Deferred driver initialization %s (ret=%d)", 
+                    init_ret == ESP_OK ? "successful" : "failed", init_ret);
+            ESP_LOGI(TAG, "[JOIN] Starting network steering (searching for coordinator)...");
+            esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+            ESP_LOGI(TAG, "[JOIN] Network steering initiated");
+        } else {
+            ESP_LOGW(TAG, "[JOIN] Failed to initialize Zigbee stack (status: %s)", 
+                    esp_err_to_name(err_status));
+        }
+        break;
+        
+    case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
+        ESP_LOGI(TAG, "[JOIN] Device reboot - previously joined network");
+        if (err_status == ESP_OK) {
+            ESP_LOGI(TAG, "[JOIN] Calling deferred driver initialization...");
+            esp_err_t init_ret = deferred_driver_init();
+            ESP_LOGI(TAG, "[JOIN] Deferred driver initialization %s (ret=%d)", 
+                    init_ret == ESP_OK ? "successful" : "failed", init_ret);
             
             if (esp_zb_bdb_is_factory_new()) {
-                ESP_LOGI(TAG, "Start network steering");
+                ESP_LOGI(TAG, "[JOIN] Factory new - starting network steering...");
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             } else {
-                ESP_LOGI(TAG, "Device rebooted");
+                ESP_LOGI(TAG, "[JOIN] Rejoining previous network...");
+                esp_zb_ieee_addr_t ieee_addr;
+                esp_zb_get_long_address(ieee_addr);
+                ESP_LOGI(TAG, "[JOIN] IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                         ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
+                         ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
             }
         } else {
-            ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s)", 
+            ESP_LOGW(TAG, "[JOIN] Failed to initialize Zigbee stack (status: %s)", 
                     esp_err_to_name(err_status));
         }
         break;
         
     case ESP_ZB_BDB_SIGNAL_STEERING:
+        ESP_LOGI(TAG, "[JOIN] Steering signal received (status: %s)", esp_err_to_name(err_status));
         if (err_status == ESP_OK) {
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
-            ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
+            ESP_LOGI(TAG, "[JOIN] *** SUCCESSFULLY JOINED NETWORK ***");
+            ESP_LOGI(TAG, "[JOIN] Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                      extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
-                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
-                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0]);
+            ESP_LOGI(TAG, "[JOIN] PAN ID: 0x%04hx", esp_zb_get_pan_id());
+            ESP_LOGI(TAG, "[JOIN] Channel: %d", esp_zb_get_current_channel());
+            ESP_LOGI(TAG, "[JOIN] Short Address: 0x%04hx", esp_zb_get_short_address());
+            
+            esp_zb_ieee_addr_t ieee_addr;
+            esp_zb_get_long_address(ieee_addr);
+            ESP_LOGI(TAG, "[JOIN] IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                     ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
+                     ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
+            
+            ESP_LOGI(TAG, "[JOIN] Device is now online and ready");
+            ESP_LOGI(TAG, "[JOIN] Scheduling periodic HVAC updates...");
             
             /* Start periodic HVAC status updates */
             esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_periodic_update, 0, 5000);
+            ESP_LOGI(TAG, "[JOIN] Setup complete!");
         } else {
-            ESP_LOGI(TAG, "Network steering was not successful (status: %s)", 
+            ESP_LOGW(TAG, "[JOIN] Network steering failed (status: %s)", 
                     esp_err_to_name(err_status));
+            ESP_LOGI(TAG, "[JOIN] Retrying network steering in 1 second...");
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, 
                                   ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
         break;
         
     default:
-        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", 
+        ESP_LOGI(TAG, "[ZDO] Signal: %s (0x%x), status: %s", 
                 esp_zb_zdo_signal_to_string(sig_type), sig_type,
                 esp_err_to_name(err_status));
         break;
@@ -300,7 +348,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "🌿 Eco mode %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[ECO] Mode %s", on_off ? "ON" : "OFF");
                 hvac_set_eco_mode(on_off);
                 esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
             }
@@ -311,7 +359,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "🌀 Swing mode %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[SWING] Mode %s", on_off ? "ON" : "OFF");
                 hvac_set_swing(on_off);
                 esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
             }
@@ -322,7 +370,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "📺 Display %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[DISPLAY] %s", on_off ? "ON" : "OFF");
                 hvac_set_display(on_off);
                 esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
             }
@@ -434,24 +482,24 @@ static void hvac_periodic_update(uint8_t param)
 
 static void esp_zb_task(void *pvParameters)
 {
-    ESP_LOGI(TAG, "🚀 Starting Zigbee task...");
+    ESP_LOGI(TAG, "[START] Starting Zigbee task...");
     
     /* Initialize Zigbee stack */
-    ESP_LOGI(TAG, "📡 Initializing Zigbee stack as End Device...");
+    ESP_LOGI(TAG, "[INIT] Initializing Zigbee stack as End Device...");
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
-    ESP_LOGI(TAG, "✅ Zigbee stack initialized");
+    ESP_LOGI(TAG, "[OK] Zigbee stack initialized");
     
     /* Create endpoint list */
-    ESP_LOGI(TAG, "📋 Creating endpoint list...");
+    ESP_LOGI(TAG, "[INIT] Creating endpoint list...");
     esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
     
     /* Create thermostat cluster list */
-    ESP_LOGI(TAG, "🌡️  Creating HVAC thermostat clusters...");
+    ESP_LOGI(TAG, "[HVAC] Creating HVAC thermostat clusters...");
     esp_zb_cluster_list_t *esp_zb_hvac_clusters = esp_zb_zcl_cluster_list_create();
     
     /* Create Basic cluster */
-    ESP_LOGI(TAG, "  ➕ Adding Basic cluster (0x0000)...");
+    ESP_LOGI(TAG, "  [+] Adding Basic cluster (0x0000)...");
     esp_zb_basic_cluster_cfg_t basic_cfg = {
         .zcl_version = ESP_ZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
         .power_source = ESP_ZB_ZCL_BASIC_POWER_SOURCE_DEFAULT_VALUE,
@@ -473,10 +521,10 @@ static void esp_zb_task(void *pvParameters)
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_hvac_clusters, esp_zb_basic_cluster, 
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_LOGI(TAG, "  ✅ Basic cluster added with extended attributes");
+    ESP_LOGI(TAG, "  [OK] Basic cluster added with extended attributes");
     
     /* Create Thermostat cluster */
-    ESP_LOGI(TAG, "  ➕ Adding Thermostat cluster (0x0201)...");
+    ESP_LOGI(TAG, "  [+] Adding Thermostat cluster (0x0201)...");
     esp_zb_thermostat_cluster_cfg_t thermostat_cfg = {
         .local_temperature = 25 * 100,                    // 25°C in centidegrees
         .occupied_cooling_setpoint = 24 * 100,            // 24°C default cooling setpoint
@@ -488,10 +536,10 @@ static void esp_zb_task(void *pvParameters)
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_LOGI(TAG, "  ✅ Thermostat cluster added");
+    ESP_LOGI(TAG, "  [OK] Thermostat cluster added");
     
     /* Create Fan Control cluster */
-    ESP_LOGI(TAG, "  ➕ Adding Fan Control cluster (0x0202)...");
+    ESP_LOGI(TAG, "  [+] Adding Fan Control cluster (0x0202)...");
     esp_zb_fan_control_cluster_cfg_t fan_cfg = {
         .fan_mode = 0x00,  // Off/Auto
         .fan_mode_sequence = 0x02,  // Low/Med/High
@@ -499,17 +547,17 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_attribute_list_t *esp_zb_fan_cluster = esp_zb_fan_control_cluster_create(&fan_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_fan_control_cluster(esp_zb_hvac_clusters, esp_zb_fan_cluster,
                                                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_LOGI(TAG, "  ✅ Fan Control cluster added");
+    ESP_LOGI(TAG, "  [OK] Fan Control cluster added");
     
     /* Add Identify cluster */
-    ESP_LOGI(TAG, "  ➕ Adding Identify cluster (0x0003)...");
+    ESP_LOGI(TAG, "  [+] Adding Identify cluster (0x0003)...");
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_identify_cluster(esp_zb_hvac_clusters, 
                                                              esp_zb_identify_cluster_create(NULL),
                                                              ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_LOGI(TAG, "  ✅ Identify cluster added");
+    ESP_LOGI(TAG, "  [OK] Identify cluster added");
     
     /* Create HVAC endpoint */
-    ESP_LOGI(TAG, "🔌 Creating HVAC endpoint %d (Profile: 0x%04X, Device: 0x%04X)...", 
+    ESP_LOGI(TAG, "[EP] Creating HVAC endpoint %d (Profile: 0x%04X, Device: 0x%04X)...", 
              HA_ESP_HVAC_ENDPOINT, ESP_ZB_AF_HA_PROFILE_ID, ESP_ZB_HA_THERMOSTAT_DEVICE_ID);
     esp_zb_endpoint_config_t endpoint_config = {
         .endpoint = HA_ESP_HVAC_ENDPOINT,
@@ -518,10 +566,10 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0
     };
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_hvac_clusters, endpoint_config);
-    ESP_LOGI(TAG, "✅ Endpoint %d added to endpoint list", HA_ESP_HVAC_ENDPOINT);
+    ESP_LOGI(TAG, "[OK] Endpoint %d added to endpoint list", HA_ESP_HVAC_ENDPOINT);
     
     /* Create Eco Mode Switch - Endpoint 2 */
-    ESP_LOGI(TAG, "🌿 Creating Eco Mode switch endpoint %d...", HA_ESP_ECO_ENDPOINT);
+    ESP_LOGI(TAG, "[ECO] Creating Eco Mode switch endpoint %d...", HA_ESP_ECO_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_eco_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_eco_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_eco_clusters, esp_zb_eco_basic_cluster,
@@ -539,10 +587,10 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0
     };
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_eco_clusters, eco_endpoint_config);
-    ESP_LOGI(TAG, "✅ Eco Mode switch endpoint %d added", HA_ESP_ECO_ENDPOINT);
+    ESP_LOGI(TAG, "[OK] Eco Mode switch endpoint %d added", HA_ESP_ECO_ENDPOINT);
     
     /* Create Swing Switch - Endpoint 3 */
-    ESP_LOGI(TAG, "🌀 Creating Swing switch endpoint %d...", HA_ESP_SWING_ENDPOINT);
+    ESP_LOGI(TAG, "[SWING] Creating Swing switch endpoint %d...", HA_ESP_SWING_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_swing_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_swing_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_swing_clusters, esp_zb_swing_basic_cluster,
@@ -560,10 +608,10 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0
     };
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_swing_clusters, swing_endpoint_config);
-    ESP_LOGI(TAG, "✅ Swing switch endpoint %d added", HA_ESP_SWING_ENDPOINT);
+    ESP_LOGI(TAG, "[OK] Swing switch endpoint %d added", HA_ESP_SWING_ENDPOINT);
     
     /* Create Display Switch - Endpoint 4 */
-    ESP_LOGI(TAG, "📺 Creating Display switch endpoint %d...", HA_ESP_DISPLAY_ENDPOINT);
+    ESP_LOGI(TAG, "[DISP] Creating Display switch endpoint %d...", HA_ESP_DISPLAY_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_display_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_display_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_display_clusters, esp_zb_display_basic_cluster,
@@ -581,10 +629,10 @@ static void esp_zb_task(void *pvParameters)
         .app_device_version = 0
     };
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_display_clusters, display_endpoint_config);
-    ESP_LOGI(TAG, "✅ Display switch endpoint %d added", HA_ESP_DISPLAY_ENDPOINT);
+    ESP_LOGI(TAG, "[OK] Display switch endpoint %d added", HA_ESP_DISPLAY_ENDPOINT);
     
     /* Add manufacturer info */
-    ESP_LOGI(TAG, "🏭 Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
+    ESP_LOGI(TAG, "[INFO] Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
         .manufacturer_name = ESP_MANUFACTURER_NAME,
         .model_identifier = ESP_MODEL_IDENTIFIER,
@@ -593,23 +641,23 @@ static void esp_zb_task(void *pvParameters)
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ECO_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_DISPLAY_ENDPOINT, &info);
-    ESP_LOGI(TAG, "✅ Manufacturer info added to all endpoints");
+    ESP_LOGI(TAG, "[OK] Manufacturer info added to all endpoints");
     
     /* Register device */
-    ESP_LOGI(TAG, "📝 Registering Zigbee device...");
+    ESP_LOGI(TAG, "[REG] Registering Zigbee device...");
     esp_zb_device_register(esp_zb_ep_list);
-    ESP_LOGI(TAG, "✅ Device registered");
+    ESP_LOGI(TAG, "[OK] Device registered");
     
-    ESP_LOGI(TAG, "🔧 Registering action handler...");
+    ESP_LOGI(TAG, "[REG] Registering action handler...");
     esp_zb_core_action_handler_register(zb_action_handler);
-    ESP_LOGI(TAG, "✅ Action handler registered");
+    ESP_LOGI(TAG, "[OK] Action handler registered");
     
-    ESP_LOGI(TAG, "📻 Setting Zigbee channel mask: 0x%08lX", (unsigned long)ESP_ZB_PRIMARY_CHANNEL_MASK);
+    ESP_LOGI(TAG, "[CFG] Setting Zigbee channel mask: 0x%08lX", (unsigned long)ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     
-    ESP_LOGI(TAG, "🚀 Starting Zigbee stack...");
+    ESP_LOGI(TAG, "[START] Starting Zigbee stack...");
     ESP_ERROR_CHECK(esp_zb_start(false));
-    ESP_LOGI(TAG, "✅ Zigbee stack started successfully");
+    ESP_LOGI(TAG, "[OK] Zigbee stack started successfully");
     
     /* Start main Zigbee stack loop */
     esp_zb_stack_main_loop();

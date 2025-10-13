@@ -19,7 +19,7 @@ const reporting = require('zigbee-herdsman-converters/lib/reporting');
 const e = exposes.presets;
 
 const definition = {
-    zigbeeModel: ['esp32c6'],
+    zigbeeModel: ['acw02-z'],
     model: 'ACW02-HVAC-ZB',
     vendor: 'ESPRESSIF',
     description: 'ACW02 HVAC Thermostat Controller via Zigbee',
