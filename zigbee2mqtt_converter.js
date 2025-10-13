@@ -18,6 +18,73 @@ const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
 const e = exposes.presets;
 
+// Custom converters for named switches
+const tzLocal = {
+    eco_mode: {
+        key: ['eco_mode'],
+        convertSet: async (entity, key, value, meta) => {
+            const state = value === 'ON' ? 1 : 0;
+            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            return {state: {eco_mode: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
+    swing_mode: {
+        key: ['swing_mode'],
+        convertSet: async (entity, key, value, meta) => {
+            const state = value === 'ON' ? 1 : 0;
+            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            return {state: {swing_mode: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
+    display: {
+        key: ['display'],
+        convertSet: async (entity, key, value, meta) => {
+            const state = value === 'ON' ? 1 : 0;
+            await entity.write('genOnOff', {onOff: state}, {disableDefaultResponse: true});
+            return {state: {display: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('genOnOff', ['onOff']);
+        },
+    },
+};
+
+const fzLocal = {
+    eco_mode: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 2) {
+                return {eco_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    swing_mode: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 3) {
+                return {swing_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    display: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 4) {
+                return {display: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+};
+
 const definition = {
     zigbeeModel: ['acw02-z'],
     model: 'ACW02-HVAC-ZB',
@@ -28,7 +95,9 @@ const definition = {
     fromZigbee: [
         fz.thermostat,
         fz.fan,
-        fz.on_off,
+        fzLocal.eco_mode,
+        fzLocal.swing_mode,
+        fzLocal.display,
     ],
     toZigbee: [
         tz.thermostat_local_temperature,
@@ -36,7 +105,9 @@ const definition = {
         tz.thermostat_occupied_cooling_setpoint,
         tz.thermostat_system_mode,
         tz.fan_mode,
-        tz.on_off,
+        tzLocal.eco_mode,
+        tzLocal.swing_mode,
+        tzLocal.display,
     ],
     
     // Expose controls in the UI
@@ -51,18 +122,27 @@ const definition = {
         exposes.enum('fan_mode', exposes.access.ALL, ['off', 'low', 'medium', 'high', 'on', 'auto', 'smart'])
             .withDescription('Fan speed control')
             .withEndpoint('ep1'),
-        e.switch().withEndpoint('ep2').withDescription('Eco mode'),
-        e.switch().withEndpoint('ep3').withDescription('Swing mode'),
-        e.switch().withEndpoint('ep4').withDescription('Display on/off'),
+        exposes.binary('eco_mode', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Eco mode')
+            .withEndpoint('ep2'),
+        exposes.binary('swing_mode', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Swing mode')
+            .withEndpoint('ep3'),
+        exposes.binary('display', exposes.access.ALL, 'ON', 'OFF')
+            .withDescription('Display on/off')
+            .withEndpoint('ep4'),
     ],
     
-    // Map endpoints
+    // Map endpoints with descriptive names
     endpoint: (device) => {
         return {
-            'ep1': 1,  // Main thermostat
-            'ep2': 2,  // Eco mode switch
-            'ep3': 3,  // Swing switch
-            'ep4': 4,  // Display switch
+            'ep1': 1,        // Main thermostat
+            'ep2': 2,        // Eco mode switch
+            'ep3': 3,        // Swing switch
+            'ep4': 4,        // Display switch
+            'eco_mode': 2,   // Alternative name for eco mode
+            'swing_mode': 3, // Alternative name for swing mode
+            'display': 4,    // Alternative name for display
         };
     },
     
