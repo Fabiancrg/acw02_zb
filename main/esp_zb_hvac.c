@@ -519,6 +519,9 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  &local_temp, false);
     
     /* Update running mode based on power and mode */
+    /* Note: Running mode shows what the AC is CURRENTLY doing (idle/heat/cool/fan)
+     * This is different from system mode which is what it's SET to (off/auto/cool/heat/dry/fan)
+     * For AUTO/DRY modes, we report 'idle' as running mode since we don't know what it's actually doing */
     uint8_t running_mode = 0x00;  // Off/Idle
     if (state.power_on) {
         switch (state.mode) {
@@ -531,14 +534,10 @@ static void hvac_update_zigbee_attributes(uint8_t param)
             case HVAC_MODE_FAN:
                 running_mode = 0x07;  // Fan only mode
                 break;
-            case HVAC_MODE_DRY:
-                running_mode = 0x08;  // Dry mode
-                break;
             case HVAC_MODE_AUTO:
-                running_mode = 0x01;  // Auto mode
-                break;
+            case HVAC_MODE_DRY:
             default:
-                running_mode = 0x00;  // Idle/Off
+                running_mode = 0x00;  // Idle for auto/dry/unknown modes
                 break;
         }
     }
@@ -677,6 +676,12 @@ static void esp_zb_task(void *pvParameters)
         .system_mode = 0x00,                              // Off
     };
     esp_zb_attribute_list_t *esp_zb_thermostat_cluster = esp_zb_thermostat_cluster_create(&thermostat_cfg);
+    
+    /* Add running_mode attribute (optional, but useful for HA) */
+    uint8_t running_mode = 0x00;  // Initial state: idle
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster, 
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
+                                       &running_mode);
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));

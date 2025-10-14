@@ -219,6 +219,44 @@ const fzLocal = {
             }
         },
     },
+    // Custom converter for thermostat to add _ep1 suffix for endpoint 1
+    thermostat_ep1: {
+        cluster: 'hvacThermostat',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            const result = {};
+            if (msg.data.hasOwnProperty('localTemp')) {
+                result.local_temperature_ep1 = msg.data.localTemp / 100;
+            }
+            if (msg.data.hasOwnProperty('runningMode')) {
+                const modeMap = {
+                    0x00: 'idle',
+                    0x03: 'cool',
+                    0x04: 'heat',
+                    0x07: 'fan_only',
+                };
+                result.running_state_ep1 = modeMap[msg.data.runningMode] || 'idle';
+            }
+            if (msg.data.hasOwnProperty('systemMode')) {
+                const sysModeMap = {
+                    0x00: 'off',
+                    0x01: 'auto',
+                    0x03: 'cool',
+                    0x04: 'heat',
+                    0x07: 'fan_only',
+                    0x08: 'dry',
+                };
+                result.system_mode_ep1 = sysModeMap[msg.data.systemMode] || 'off';
+            }
+            if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
+                result.occupied_heating_setpoint_ep1 = msg.data.occupiedHeatingSetpoint / 100;
+            }
+            if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
+                result.occupied_cooling_setpoint_ep1 = msg.data.occupiedCoolingSetpoint / 100;
+            }
+            return result;
+        },
+    },
 };
 
 const definition = {
@@ -229,7 +267,7 @@ const definition = {
     
     // Supported features
     fromZigbee: [
-        fz.thermostat,
+        fzLocal.thermostat_ep1,  // Custom thermostat converter with _ep1 suffix
         fzLocal.fan_mode,
         fzLocal.eco_mode,
         fzLocal.swing_mode,
@@ -261,7 +299,7 @@ const definition = {
             .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
-            .withRunningState(['idle', 'heat', 'cool', 'fan_only', 'dry', 'auto'])
+            .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
             .withEndpoint('ep1'),
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
@@ -300,13 +338,6 @@ const definition = {
             'ep6': 6,          // Purifier switch
             'ep7': 7,          // Clean status binary sensor
             'ep8': 8,          // Mute switch
-            'eco_mode': 2,     // Alternative name for eco mode
-            'swing_mode': 3,   // Alternative name for swing mode
-            'display': 4,      // Alternative name for display
-            'night_mode': 5,   // Alternative name for night mode
-            'purifier': 6,     // Alternative name for purifier
-            'clean_status': 7, // Alternative name for clean status
-            'mute': 8,         // Alternative name for mute
         };
     },
     
