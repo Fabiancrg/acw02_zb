@@ -244,23 +244,15 @@ const fzLocal = {
             if (msg.data.hasOwnProperty('localTemp')) {
                 result.local_temperature_ep1 = msg.data.localTemp / 100;
             }
-            if (msg.data.hasOwnProperty('runningState')) {
-                // runningState is a 16-bit bitmap: bit 0=heat, bit 1=cool, bit 2=fan
-                const bitmap = msg.data.runningState;
-                let state = 'idle';
-                if (bitmap & 0x0001) state = 'heat';      // Bit 0: heating
-                else if (bitmap & 0x0002) state = 'cool'; // Bit 1: cooling  
-                else if (bitmap & 0x0004) state = 'fan_only'; // Bit 2: fan only
-                result.running_state_ep1 = state;
-            } else if (msg.data.hasOwnProperty('runningMode')) {
-                // Fallback to runningMode if runningState not available
+            if (msg.data.hasOwnProperty('runningMode')) {
+                // runningMode is an 8-bit enum: 0x00=idle, 0x03=cool, 0x04=heat, 0x07=fan
                 const modeMap = {
                     0x00: 'idle',
                     0x03: 'cool',
                     0x04: 'heat',
                     0x07: 'fan_only',
                 };
-                result.running_state_ep1 = modeMap[msg.data.runningMode] || 'idle';
+                result.running_mode_ep1 = modeMap[msg.data.runningMode] || 'idle';
             }
             if (msg.data.hasOwnProperty('systemMode')) {
                 const sysModeMap = {
@@ -325,7 +317,7 @@ const definition = {
             .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
-            .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
+            .withRunningMode(['idle', 'heat', 'cool', 'fan_only'])
             .withEndpoint('ep1'),
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
@@ -388,21 +380,9 @@ const definition = {
         // localTemp (current temperature) is reportable
         await reporting.thermostatTemperature(endpoint1);
         
-        // Try to configure runningState (0x0029 bitmap) for automatic reporting
-        // This MIGHT be reportable (unlike runningMode which is definitely not)
-        try {
-            await endpoint1.configureReporting('hvacThermostat', [{
-                attribute: 'runningState',  // 0x0029 - 16-bit bitmap
-                minimumReportInterval: 0,
-                maximumReportInterval: 3600,
-                reportableChange: 1,
-            }]);
-        } catch (error) {
-            // If runningState is also unreportable, silently ignore
-            // We'll poll it instead
-        }
+        // Note: runningMode (0x001E) is NOT reportable - we poll it instead
         
-        // Note: runningMode, systemMode, occupiedHeatingSetpoint, occupiedCoolingSetpoint, 
+        // Bind on/off cluster for switches (endpoints 2-8)
         // and fanMode are NOT reportable attributes in ESP-Zigbee stack
         // Z2M will poll these when needed or they can be read manually
         
@@ -447,9 +427,8 @@ const definition = {
         // Helper function to poll unreportable attributes
         const pollAttributes = async () => {
             try {
-                // Read thermostat attributes
-                // Try runningState first (might be reportable), fallback to runningMode
-                await endpoint1.read('hvacThermostat', ['runningState', 'runningMode', 'systemMode', 
+                // Read thermostat attributes (runningMode is unreportable, needs polling)
+                await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
                                                         'occupiedHeatingSetpoint', 
                                                         'occupiedCoolingSetpoint']);
             } catch (error) {
