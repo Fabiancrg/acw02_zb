@@ -413,11 +413,6 @@ const definition = {
         const endpoint8 = device.getEndpoint(8);
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
-        
-        // Bind and configure endpoint 9 (Error status - read-only)
-        const endpoint9 = device.getEndpoint(9);
-        await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint9);
     },
 };
 
