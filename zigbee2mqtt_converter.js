@@ -223,7 +223,7 @@ const fzLocal = {
 
 const definition = {
     zigbeeModel: ['acw02-z'],
-    model: 'ACW02-HVAC-ZB',
+    model: 'ACW02-ZB',
     vendor: 'ESPRESSIF',
     description: 'ACW02 HVAC Thermostat Controller via Zigbee',
     
@@ -261,7 +261,7 @@ const definition = {
             .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
-            .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
+            .withRunningState(['idle', 'heat', 'cool', 'fan_only', 'dry', 'auto'])
             .withEndpoint('ep1'),
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
@@ -364,8 +364,5 @@ const definition = {
         await reporting.onOff(endpoint8);
     },
 };
-
-module.exports = definition;
-
 
 module.exports = definition;

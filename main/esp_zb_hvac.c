@@ -528,8 +528,17 @@ static void hvac_update_zigbee_attributes(uint8_t param)
             case HVAC_MODE_COOL:
                 running_mode = 0x03;  // Cool mode
                 break;
+            case HVAC_MODE_FAN:
+                running_mode = 0x07;  // Fan only mode
+                break;
+            case HVAC_MODE_DRY:
+                running_mode = 0x08;  // Dry mode
+                break;
+            case HVAC_MODE_AUTO:
+                running_mode = 0x01;  // Auto mode
+                break;
             default:
-                running_mode = 0x00;  // Idle for other modes
+                running_mode = 0x00;  // Idle/Off
                 break;
         }
     }
