@@ -244,7 +244,16 @@ const fzLocal = {
             if (msg.data.hasOwnProperty('localTemp')) {
                 result.local_temperature_ep1 = msg.data.localTemp / 100;
             }
-            if (msg.data.hasOwnProperty('runningMode')) {
+            if (msg.data.hasOwnProperty('runningState')) {
+                // runningState is a 16-bit bitmap: bit 0=heat, bit 1=cool, bit 2=fan
+                const bitmap = msg.data.runningState;
+                let state = 'idle';
+                if (bitmap & 0x0001) state = 'heat';      // Bit 0: heating
+                else if (bitmap & 0x0002) state = 'cool'; // Bit 1: cooling  
+                else if (bitmap & 0x0004) state = 'fan_only'; // Bit 2: fan only
+                result.running_state_ep1 = state;
+            } else if (msg.data.hasOwnProperty('runningMode')) {
+                // Fallback to runningMode if runningState not available
                 const modeMap = {
                     0x00: 'idle',
                     0x03: 'cool',
@@ -379,6 +388,20 @@ const definition = {
         // localTemp (current temperature) is reportable
         await reporting.thermostatTemperature(endpoint1);
         
+        // Try to configure runningState (0x0029 bitmap) for automatic reporting
+        // This MIGHT be reportable (unlike runningMode which is definitely not)
+        try {
+            await endpoint1.configureReporting('hvacThermostat', [{
+                attribute: 'runningState',  // 0x0029 - 16-bit bitmap
+                minimumReportInterval: 0,
+                maximumReportInterval: 3600,
+                reportableChange: 1,
+            }]);
+        } catch (error) {
+            // If runningState is also unreportable, silently ignore
+            // We'll poll it instead
+        }
+        
         // Note: runningMode, systemMode, occupiedHeatingSetpoint, occupiedCoolingSetpoint, 
         // and fanMode are NOT reportable attributes in ESP-Zigbee stack
         // Z2M will poll these when needed or they can be read manually
@@ -416,23 +439,21 @@ const definition = {
         await reporting.onOff(endpoint8);
     },
     
-    // Poll unreportable attributes on device events and periodically
-    onEvent: async (type, data, device, options) => {
+    // Poll unreportable attributes on device events and with periodic timer
+    onEvent: async (type, data, device, options, state) => {
         const endpoint1 = device.getEndpoint(1);
         if (!endpoint1) return;
         
-        // Poll on device announce, stop, or any message from the device
-        // This ensures we get updates when state changes
-        const shouldPoll = type === 'deviceAnnounce' || type === 'stop' || type === 'message';
-        
-        if (shouldPoll) {
+        // Helper function to poll unreportable attributes
+        const pollAttributes = async () => {
             try {
-                // Read thermostat attributes (runningMode, systemMode, setpoints)
-                await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
+                // Read thermostat attributes
+                // Try runningState first (might be reportable), fallback to runningMode
+                await endpoint1.read('hvacThermostat', ['runningState', 'runningMode', 'systemMode', 
                                                         'occupiedHeatingSetpoint', 
                                                         'occupiedCoolingSetpoint']);
             } catch (error) {
-                // Silently ignore read errors
+                // Silently ignore read errors (device may be offline or busy)
             }
             
             try {
@@ -440,6 +461,36 @@ const definition = {
                 await endpoint1.read('genBasic', ['locationDesc']);
             } catch (error) {
                 // Silently ignore read errors
+            }
+        };
+        
+        // Poll on various events to ensure fresh data
+        if (type === 'deviceAnnounce' || type === 'stop' || type === 'message') {
+            await pollAttributes();
+        }
+        
+        // Set up periodic polling (every 30 seconds by default)
+        // This ensures running_state and error_text stay current even when device is idle
+        if (type === 'start') {
+            // Clear any existing timer
+            if (globalThis.acw02PollTimer) {
+                clearInterval(globalThis.acw02PollTimer);
+            }
+            
+            // Start new polling timer (30 second interval)
+            const pollInterval = (options && options.state_poll_interval) || 30;
+            if (pollInterval > 0) {
+                globalThis.acw02PollTimer = setInterval(async () => {
+                    await pollAttributes();
+                }, pollInterval * 1000);
+            }
+        }
+        
+        // Clean up timer on stop
+        if (type === 'stop') {
+            if (globalThis.acw02PollTimer) {
+                clearInterval(globalThis.acw02PollTimer);
+                globalThis.acw02PollTimer = null;
             }
         }
     },

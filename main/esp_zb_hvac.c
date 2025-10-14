@@ -558,9 +558,37 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
                                  &running_mode, false);
     
+    /* Also set running_state bitmap (0x0029) - This MAY be reportable */
+    /* Bitmap: bit 0 = Heat, bit 1 = Cool, bit 2 = Fan, bit 3 = Heat 2nd stage, 
+     *         bit 4 = Cool 2nd stage, bit 5 = Fan 2nd stage, bit 6 = Fan 3rd stage */
+    uint16_t running_state_bitmap = 0x0000;
+    if (state.power_on) {
+        switch (state.mode) {
+            case HVAC_MODE_HEAT:
+                running_state_bitmap = 0x0001;  // Bit 0: Heat is running
+                break;
+            case HVAC_MODE_COOL:
+                running_state_bitmap = 0x0002;  // Bit 1: Cool is running
+                break;
+            case HVAC_MODE_FAN:
+                running_state_bitmap = 0x0004;  // Bit 2: Fan only is running
+                break;
+            default:
+                running_state_bitmap = 0x0000;  // Nothing running (auto/dry/off)
+                break;
+        }
+    }
+    
+    ESP_LOGI(TAG, "Setting running_state bitmap=0x%04X to Zigbee", running_state_bitmap);
+    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 0x0029,  // ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_STATE_ID
+                                 &running_state_bitmap, false);
+    
     /* Note: running_mode is not auto-reportable in ESP-Zigbee stack.
-     * Z2M will read this attribute when needed (e.g., on state refresh or polling).
-     * The attribute is correctly set above and will be available for reads. */
+     * running_state (bitmap) MIGHT be reportable - Z2M will try to configure it.
+     * Z2M will read these attributes when needed (e.g., on state refresh or polling).
+     * The attributes are correctly set above and will be available for reads. */
     
     /* Update Eco Mode switch state - Endpoint 2 */
     esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
@@ -715,11 +743,17 @@ static void esp_zb_task(void *pvParameters)
     };
     esp_zb_attribute_list_t *esp_zb_thermostat_cluster = esp_zb_thermostat_cluster_create(&thermostat_cfg);
     
-    /* Add running_mode attribute (optional, but useful for HA) */
+    /* Add running_mode attribute (optional, for backwards compatibility) */
     uint8_t running_mode = 0x00;  // Initial state: idle
     esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster, 
                                        ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
                                        &running_mode);
+    
+    /* Add running_state attribute (0x0029 - 16-bit bitmap, potentially reportable) */
+    uint16_t running_state = 0x0000;  // Initial state: all off (bit 0=heat off, bit 1=cool off)
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       0x0029,  // ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_STATE_ID
+                                       &running_state);
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
