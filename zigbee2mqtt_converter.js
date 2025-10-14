@@ -252,7 +252,7 @@ const fzLocal = {
                     0x04: 'heat',
                     0x07: 'fan_only',
                 };
-                result.running_mode_ep1 = modeMap[msg.data.runningMode] || 'idle';
+                result.running_state_ep1 = modeMap[msg.data.runningMode] || 'idle';
             }
             if (msg.data.hasOwnProperty('systemMode')) {
                 const sysModeMap = {
@@ -317,7 +317,7 @@ const definition = {
             .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
-            .withRunningMode(['idle', 'heat', 'cool', 'fan_only'])
+            .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
             .withEndpoint('ep1'),
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
@@ -443,23 +443,26 @@ const definition = {
             }
         };
         
-        // Poll on various events to ensure fresh data
-        if (type === 'deviceAnnounce' || type === 'stop' || type === 'message') {
+        // Poll immediately on device announce or message events
+        if (type === 'deviceAnnounce' || type === 'message') {
             await pollAttributes();
         }
         
-        // Set up periodic polling (every 30 seconds by default)
-        // This ensures running_state and error_text stay current even when device is idle
-        if (type === 'start') {
-            // Clear any existing timer
-            if (globalThis.acw02PollTimer) {
-                clearInterval(globalThis.acw02PollTimer);
+        // Set up periodic polling when Z2M starts OR when device joins network
+        // This ensures timer starts even if device joins after Z2M is already running
+        if (type === 'start' || type === 'deviceAnnounce') {
+            // Use device-specific timer key to support multiple devices
+            const timerKey = `acw02PollTimer_${device.ieeeAddr}`;
+            
+            // Clear any existing timer for this device
+            if (globalThis[timerKey]) {
+                clearInterval(globalThis[timerKey]);
             }
             
-            // Start new polling timer (30 second interval)
+            // Start new polling timer (default: 30 seconds, configurable)
             const pollInterval = (options && options.state_poll_interval) || 30;
             if (pollInterval > 0) {
-                globalThis.acw02PollTimer = setInterval(async () => {
+                globalThis[timerKey] = setInterval(async () => {
                     await pollAttributes();
                 }, pollInterval * 1000);
             }
@@ -467,9 +470,10 @@ const definition = {
         
         // Clean up timer on stop
         if (type === 'stop') {
-            if (globalThis.acw02PollTimer) {
-                clearInterval(globalThis.acw02PollTimer);
-                globalThis.acw02PollTimer = null;
+            const timerKey = `acw02PollTimer_${device.ieeeAddr}`;
+            if (globalThis[timerKey]) {
+                clearInterval(globalThis[timerKey]);
+                globalThis[timerKey] = null;
             }
         }
     },
