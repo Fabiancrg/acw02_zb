@@ -17,6 +17,121 @@
 static const char *TAG = "HVAC_DRIVER";
 static const char *NVS_NAMESPACE = "hvac_storage";
 
+/* Error code mapping structure */
+typedef struct {
+    uint8_t code_high;  // High byte (ASCII character like 'E', 'P', 'U', etc.)
+    uint8_t code_low;   // Low byte (ASCII digit like '0', '1', etc.)
+    const char *description;
+} error_code_entry_t;
+
+/* Error code lookup table from AIRTON-LIST-ERROR-CODE.EN.pdf */
+static const error_code_entry_t error_code_table[] = {
+    {'C', 'L', "Filter cleaning reminder"},
+    {'D', '0', "Compressor RMS phase current limit"},
+    {'D', '1', "Low RMS machine current limit"},
+    {'D', '2', "Lower gas discharge temperature limit"},
+    {'D', '3', "Extreme anti-freeze limit"},
+    {'D', '4', "Overload limit"},
+    {'D', '5', "IPM power module temperature limit"},
+    {'E', '0', "Protection against high discharge temperatures"},
+    {'E', '1', "Overload protection"},
+    {'E', '2', "Compressor overload protection"},
+    {'E', '3', "Frost protection"},
+    {'E', '7', "4-way valve malfunction"},
+    {'E', '8', "Abnormal outdoor ambient temperature"},
+    {'H', '0', "Compressor stalling or jamming"},
+    {'H', '1', "Startup failure"},
+    {'H', '2', "Compressor phase current peak protection"},
+    {'H', '3', "Compressor phase current RMS protection"},
+    {'H', '4', "IPM power module protection"},
+    {'H', '5', "IPM overheat protection"},
+    {'H', '6', "Compressor circuit phase detection error"},
+    {'H', '7', "Compressor phase loss error"},
+    {'H', '8', "Outdoor unit fan motor error"},
+    {'H', '9', "Outdoor unit fan motor phase current detection circuit error"},
+    {'L', '0', "Jumper error"},
+    {'L', '1', "Indoor fan motor zero crossing detection circuit malfunction"},
+    {'L', '2', "Indoor fan motor error"},
+    {'L', '3', "Communication fault between indoor and outdoor unit"},
+    {'L', '4', "Port selection error"},
+    {'L', '5', "EEPROM error on indoor unit"},
+    {'L', '6', "Communication fault between outdoor and indoor unit"},
+    {'L', 'L', "Function test"},
+    {'P', '0', "EEPROM error on outdoor unit"},
+    {'P', '1', "Power on error"},
+    {'P', '2', "AC current protection"},
+    {'P', '3', "High voltage protection"},
+    {'P', '4', "Low voltage protection"},
+    {'P', '5', "DC DC line voltage drop protection"},
+    {'P', '6', "Current detection circuit error"},
+    {'P', '7', "Overcurrent protection"},
+    {'P', '8', "PFC current detection circuit error"},
+    {'P', '9', "PFC protection"},
+    {'P', 'A', "IU and EU mismatch"},
+    {'P', 'C', "Fashion Conflict"},
+    {'U', '0', "Ambient temperature sensor (probe) open/closed circuit"},
+    {'U', '1', "Pipe temperature sensor (probe) open/closed circuit"},
+    {'U', '2', "Ambient temperature sensor (probe) open/closed circuit"},
+    {'U', '3', "UE Discharge Sensor (Probe) Open/Closed Circuit"},
+    {'U', '4', "UE pipe temperature sensor open/closed circuit (probe)"},
+    {'U', '5', "IPM power module temperature sensor open/closed circuit"},
+    {'U', '6', "Liquid pipe outlet temperature sensor open/closed circuit"},
+    {'U', '7', "Gas pipe outlet temperature sensor open/closed circuit"},
+    {'U', '8', "Discharge temperature sensor open/closed circuit"},
+};
+
+#define ERROR_CODE_TABLE_SIZE (sizeof(error_code_table) / sizeof(error_code_entry_t))
+
+/* Decode error code to human-readable text */
+static const char* hvac_decode_error_code(uint8_t code) {
+    // Handle special case for filter cleaning (0x80)
+    if (code == 0x80) {
+        return "Filter cleaning reminder (CL)";
+    }
+    
+    // Handle standard two-byte error codes
+    // The code format appears to be: high nibble = letter, low nibble = digit
+    // For example: E1 might be encoded differently
+    
+    // Try to decode assuming ASCII-like encoding
+    uint8_t code_high = (code >> 4) & 0x0F;
+    uint8_t code_low = code & 0x0F;
+    
+    // Convert nibbles to ASCII characters
+    char high_char = 0, low_char = 0;
+    
+    // Map high nibble to letter (rough approximation - may need adjustment based on actual protocol)
+    if (code_high >= 0x0C && code_high <= 0x0F) {
+        high_char = 'C' + (code_high - 0x0C);  // C, D, E, F
+    } else if (code_high >= 0x08 && code_high <= 0x0B) {
+        high_char = 'H' + (code_high - 0x08);  // H, I, J, K
+    } else if (code_high >= 0x04 && code_high <= 0x07) {
+        high_char = 'L' + (code_high - 0x04);  // L, M, N, O
+    } else if (code_high >= 0x00 && code_high <= 0x03) {
+        high_char = 'P' + (code_high - 0x00);  // P, Q, R, S
+    }
+    
+    // Map low nibble to digit or letter
+    if (code_low <= 9) {
+        low_char = '0' + code_low;
+    } else {
+        low_char = 'A' + (code_low - 10);  // A=10, B=11, C=12, etc.
+    }
+    
+    // Search in lookup table
+    for (size_t i = 0; i < ERROR_CODE_TABLE_SIZE; i++) {
+        if (error_code_table[i].code_high == high_char && 
+            error_code_table[i].code_low == low_char) {
+            return error_code_table[i].description;
+        }
+    }
+    
+    // If not found in table, return unknown with hex code
+    static char unknown_buffer[32];
+    snprintf(unknown_buffer, sizeof(unknown_buffer), "Unknown error code 0x%02X", code);
+    return unknown_buffer;
+}
+
 /* Current HVAC state */
 static hvac_state_t current_state = {
     .mode = HVAC_MODE_COOL,
@@ -265,16 +380,23 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         uint8_t fault = frame[12];
         
         if (fault != 0x00) {
-            ESP_LOGE(TAG, "AC FAULT: code=0x%02X", fault);
+            const char *error_desc = hvac_decode_error_code(fault);
+            ESP_LOGE(TAG, "AC FAULT: code=0x%02X - %s", fault, error_desc);
             current_state.error = true;
+            snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                     "FAULT 0x%02X: %s", fault, error_desc);
         } else if (warn != 0x00) {
-            ESP_LOGW(TAG, "AC WARNING: code=0x%02X", warn);
+            const char *warn_desc = hvac_decode_error_code(warn);
+            ESP_LOGW(TAG, "AC WARNING: code=0x%02X - %s", warn, warn_desc);
+            snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                     "WARNING 0x%02X: %s", warn, warn_desc);
             if (warn == 0x80) {
                 current_state.filter_dirty = true;
             }
         } else {
             current_state.filter_dirty = false;
             current_state.error = false;
+            strncpy(current_state.error_text, "No Error", sizeof(current_state.error_text));
         }
         return;
     }

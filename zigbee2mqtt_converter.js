@@ -219,6 +219,26 @@ const fzLocal = {
             }
         },
     },
+    error_status: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 9) {
+                const result = {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+                // Also read the error text if available (custom attribute 0x8000)
+                if (msg.data['32768'] !== undefined) {  // 0x8000 in decimal
+                    // Zigbee string: first byte is length, rest is text
+                    const errorTextBytes = msg.data['32768'];
+                    if (errorTextBytes && errorTextBytes.length > 0) {
+                        const textLength = errorTextBytes[0];
+                        const textData = errorTextBytes.slice(1, 1 + textLength);
+                        result.error_text = String.fromCharCode.apply(null, textData);
+                    }
+                }
+                return result;
+            }
+        },
+    },
     // Custom converter for thermostat to add _ep1 suffix for endpoint 1
     thermostat_ep1: {
         cluster: 'hvacThermostat',
@@ -276,6 +296,7 @@ const definition = {
         fzLocal.purifier,
         fzLocal.clean_status,
         fzLocal.mute,
+        fzLocal.error_status,
     ],
     toZigbee: [
         tz.thermostat_local_temperature,
@@ -325,6 +346,12 @@ const definition = {
         exposes.binary('mute', exposes.access.ALL, 'ON', 'OFF')
             .withDescription('Mute beep sounds on AC')
             .withEndpoint('ep8'),
+        exposes.binary('error_status', exposes.access.STATE_GET, 'ON', 'OFF')
+            .withDescription('Error or warning status from AC (read-only)')
+            .withEndpoint('ep9'),
+        exposes.text('error_text', exposes.access.STATE_GET)
+            .withDescription('Error message text (read-only)')
+            .withEndpoint('ep9'),
     ],
     
     // Map endpoints with descriptive names
@@ -338,6 +365,7 @@ const definition = {
             'ep6': 6,          // Purifier switch
             'ep7': 7,          // Clean status binary sensor
             'ep8': 8,          // Mute switch
+            'ep9': 9,          // Error/diagnostics binary sensor
         };
     },
     
@@ -393,6 +421,11 @@ const definition = {
         const endpoint8 = device.getEndpoint(8);
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
+        
+        // Bind and configure endpoint 9 (Error status - read-only)
+        const endpoint9 = device.getEndpoint(9);
+        await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint9);
     },
 };
 
