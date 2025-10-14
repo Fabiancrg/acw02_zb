@@ -51,12 +51,12 @@ static const uint8_t get_status_frame[] = {
 };
 
 /* Fahrenheit encoding table for temperatures 61-88°F */
-static const uint8_t fahrenheit_encoding_table[] = { 
-    0x20, 0x21, 0x31, 0x22, 0x32, 0x23, 0x33, 0x24, 0x25,
-    0x35, 0x26, 0x36, 0x27, 0x37, 0x28, 0x38, 0x29, 0x2A, 
-    0x3A, 0x2B, 0x3B, 0x2C, 0x3C, 0x2D, 0x3D, 0x2E, 0x2F, 
-    0x3F
-};
+// static const uint8_t fahrenheit_encoding_table[] = { 
+//     0x20, 0x21, 0x31, 0x22, 0x32, 0x23, 0x33, 0x24, 0x25,
+//     0x35, 0x26, 0x36, 0x27, 0x37, 0x28, 0x38, 0x29, 0x2A, 
+//     0x3A, 0x2B, 0x3B, 0x2C, 0x3C, 0x2D, 0x3D, 0x2E, 0x2F, 
+//     0x3F
+// };
 
 /* Forward declarations */
 static uint16_t hvac_crc16(const uint8_t *data, size_t len);
@@ -87,6 +87,9 @@ static uint16_t hvac_crc16(const uint8_t *data, size_t len)
 
 /**
  * @brief Encode temperature to HVAC format
+ * 
+ * IMPORTANT: The ACW02 appears to expect Celsius values directly, not Fahrenheit!
+ * The encoding table was misleading - we should just send the Celsius value.
  */
 static uint8_t hvac_encode_temperature(uint8_t temp_c)
 {
@@ -94,20 +97,9 @@ static uint8_t hvac_encode_temperature(uint8_t temp_c)
     if (temp_c < 16) temp_c = 16;
     if (temp_c > 31) temp_c = 31;
     
-    // Convert Celsius to Fahrenheit: F = C * 9/5 + 32
-    uint8_t temp_f = (temp_c * 9 / 5) + 32;
-    
-    // Clamp to valid Fahrenheit range (61-88°F)
-    if (temp_f < 61) temp_f = 61;
-    if (temp_f > 88) temp_f = 88;
-    
-    // Look up encoding in table
-    int index = temp_f - 61;
-    if (index < 0 || index >= sizeof(fahrenheit_encoding_table)) {
-        return fahrenheit_encoding_table[17]; // Default to ~78°F (25°C)
-    }
-    
-    return fahrenheit_encoding_table[index];
+    // Send Celsius value directly
+    // The ACW02 protocol expects the temperature in Celsius
+    return temp_c;
 }
 
 /**
@@ -288,20 +280,14 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     bool silent_bit = (temp_byte & 0x40) != 0;
     temp_byte &= 0x3F;  // Remove SILENT bit
     
-    // Decode temperature (check if Fahrenheit or Celsius)
-    bool is_fahrenheit = false;
-    for (int i = 0; i < 28; i++) {
-        if (temp_byte == fahrenheit_encoding_table[i]) {
-            is_fahrenheit = true;
-            uint8_t temp_f = i + 61;
-            current_state.target_temp_c = (uint8_t)((temp_f - 32) * 5 / 9);
-            break;
-        }
-    }
-    
-    if (!is_fahrenheit) {
-        // Direct Celsius encoding
-        current_state.target_temp_c = 16 + temp_byte;
+    // Temperature is in Celsius (16-31°C range)
+    // The ACW02 sends temperature values directly in Celsius
+    if (temp_byte >= 16 && temp_byte <= 31) {
+        current_state.target_temp_c = temp_byte;
+    } else {
+        // If out of expected range, clamp to valid range
+        ESP_LOGW(TAG, "Unexpected temperature value: %d, clamping to range", temp_byte);
+        current_state.target_temp_c = (temp_byte < 16) ? 16 : 31;
     }
     
     // Override fan if SILENT bit is set
