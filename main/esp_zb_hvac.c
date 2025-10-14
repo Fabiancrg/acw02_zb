@@ -518,6 +518,26 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
                                  &local_temp, false);
     
+    /* Update running mode based on power and mode */
+    uint8_t running_mode = 0x00;  // Off/Idle
+    if (state.power_on) {
+        switch (state.mode) {
+            case HVAC_MODE_HEAT:
+                running_mode = 0x04;  // Heat mode
+                break;
+            case HVAC_MODE_COOL:
+                running_mode = 0x03;  // Cool mode
+                break;
+            default:
+                running_mode = 0x00;  // Idle for other modes
+                break;
+        }
+    }
+    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
+                                 &running_mode, false);
+    
     /* Update Eco Mode switch state - Endpoint 2 */
     esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,

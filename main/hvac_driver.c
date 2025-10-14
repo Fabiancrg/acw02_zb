@@ -11,8 +11,11 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/gpio.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "HVAC_DRIVER";
+static const char *NVS_NAMESPACE = "hvac_storage";
 
 /* Current HVAC state */
 static hvac_state_t current_state = {
@@ -239,7 +242,22 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         return;
     }
     
-    ESP_LOGI(TAG, "RX: Valid frame received", len);
+    ESP_LOGI(TAG, "RX [%d bytes]: Valid frame received", len);
+    
+    // Handle 13-byte ACK frames from AC (acknowledgment of commands)
+    // Frame structure: 7A 7A D1 21 0D 00 00 A4 0A 0A 00 CRC CRC
+    if (len == 13 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD1 && frame[3] == 0x21) {
+        ESP_LOGD(TAG, "ACK frame received from AC (13 bytes)");
+        // This is just an acknowledgment, no state to decode
+        return;
+    }
+    
+    // Handle 18-byte frames (if they exist)
+    if (len == 18 && frame[0] == 0x7A && frame[1] == 0x7A) {
+        ESP_LOGD(TAG, "18-byte frame received (keepalive/other)");
+        // Handle if needed in the future
+        return;
+    }
     
     // Handle 28-byte warning/error frames
     if (len == 28 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD5 && frame[3] == 0x21) {
@@ -397,6 +415,105 @@ static void hvac_rx_task(void *arg)
 }
 
 /**
+ * @brief Save HVAC settings to NVS (Non-Volatile Storage)
+ */
+static esp_err_t hvac_save_settings(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    
+    // Open NVS
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    // Save all settings
+    nvs_set_u8(nvs_handle, "mode", (uint8_t)current_state.mode);
+    nvs_set_u8(nvs_handle, "power", current_state.power_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "temp", current_state.target_temp_c);
+    nvs_set_u8(nvs_handle, "fan", (uint8_t)current_state.fan_speed);
+    nvs_set_u8(nvs_handle, "eco", current_state.eco_mode ? 1 : 0);
+    nvs_set_u8(nvs_handle, "night", current_state.night_mode ? 1 : 0);
+    nvs_set_u8(nvs_handle, "display", current_state.display_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "swing", current_state.swing_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "purifier", current_state.purifier_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "mute", current_state.mute_on ? 1 : 0);
+    
+    // Commit changes
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to commit NVS: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Settings saved to NVS");
+    }
+    
+    nvs_close(nvs_handle);
+    return err;
+}
+
+/**
+ * @brief Load HVAC settings from NVS
+ */
+static esp_err_t hvac_load_settings(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    
+    // Open NVS
+    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "No saved settings found, using defaults");
+        } else {
+            ESP_LOGE(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+    
+    // Load all settings
+    uint8_t val;
+    
+    if (nvs_get_u8(nvs_handle, "mode", &val) == ESP_OK) {
+        current_state.mode = (hvac_mode_t)val;
+    }
+    if (nvs_get_u8(nvs_handle, "power", &val) == ESP_OK) {
+        current_state.power_on = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "temp", &val) == ESP_OK) {
+        current_state.target_temp_c = val;
+    }
+    if (nvs_get_u8(nvs_handle, "fan", &val) == ESP_OK) {
+        current_state.fan_speed = (hvac_fan_t)val;
+    }
+    if (nvs_get_u8(nvs_handle, "eco", &val) == ESP_OK) {
+        current_state.eco_mode = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "night", &val) == ESP_OK) {
+        current_state.night_mode = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "display", &val) == ESP_OK) {
+        current_state.display_on = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "swing", &val) == ESP_OK) {
+        current_state.swing_on = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "purifier", &val) == ESP_OK) {
+        current_state.purifier_on = (val != 0);
+    }
+    if (nvs_get_u8(nvs_handle, "mute", &val) == ESP_OK) {
+        current_state.mute_on = (val != 0);
+    }
+    
+    ESP_LOGI(TAG, "Settings loaded from NVS: Mode=%d, Power=%d, Temp=%d°C",
+             current_state.mode, current_state.power_on, current_state.target_temp_c);
+    
+    nvs_close(nvs_handle);
+    return ESP_OK;
+}
+
+/**
  * @brief Initialize HVAC driver
  */
 esp_err_t hvac_driver_init(void)
@@ -451,6 +568,10 @@ esp_err_t hvac_driver_init(void)
     }
     ESP_LOGI(TAG, "[OK] RX task created");
     
+    // Load saved settings from NVS
+    ESP_LOGI(TAG, "[HVAC] Loading saved settings from NVS");
+    hvac_load_settings();
+    
     ESP_LOGI(TAG, "[OK] HVAC driver initialized successfully");
     
     // Send initial keepalive
@@ -458,6 +579,10 @@ esp_err_t hvac_driver_init(void)
     vTaskDelay(pdMS_TO_TICKS(100));
     hvac_send_keepalive();
     ESP_LOGI(TAG, "[OK] Initial keepalive sent");
+    
+    // Apply loaded settings to HVAC
+    ESP_LOGI(TAG, "[HVAC] Applying loaded settings to HVAC");
+    hvac_build_and_send_command();
     
     return ESP_OK;
 }
@@ -482,6 +607,7 @@ esp_err_t hvac_set_power(bool power_on)
 {
     ESP_LOGI(TAG, "Setting power: %s", power_on ? "ON" : "OFF");
     current_state.power_on = power_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -495,6 +621,7 @@ esp_err_t hvac_set_mode(hvac_mode_t mode)
     if (mode != HVAC_MODE_OFF) {
         current_state.power_on = true;
     }
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -510,6 +637,7 @@ esp_err_t hvac_set_temperature(uint8_t temp_c)
     
     ESP_LOGI(TAG, "Setting temperature: %d°C", temp_c);
     current_state.target_temp_c = temp_c;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -527,6 +655,7 @@ esp_err_t hvac_set_eco_mode(bool eco_on)
         return ESP_ERR_INVALID_STATE;
     }
     
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -537,6 +666,7 @@ esp_err_t hvac_set_display(bool display_on)
 {
     ESP_LOGI(TAG, "Setting display: %s", display_on ? "ON" : "OFF");
     current_state.display_on = display_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -547,6 +677,7 @@ esp_err_t hvac_set_swing(bool swing_on)
 {
     ESP_LOGI(TAG, "Setting swing: %s", swing_on ? "ON" : "OFF");
     current_state.swing_on = swing_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -564,6 +695,7 @@ esp_err_t hvac_set_fan_speed(hvac_fan_t fan)
         current_state.fan_speed = HVAC_FAN_AUTO;
     }
     
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -592,6 +724,7 @@ esp_err_t hvac_set_night_mode(bool night_on)
 {
     ESP_LOGI(TAG, "Setting night mode: %s", night_on ? "ON" : "OFF");
     current_state.night_mode = night_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -602,6 +735,7 @@ esp_err_t hvac_set_purifier(bool purifier_on)
 {
     ESP_LOGI(TAG, "Setting purifier: %s", purifier_on ? "ON" : "OFF");
     current_state.purifier_on = purifier_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
@@ -612,6 +746,7 @@ esp_err_t hvac_set_mute(bool mute_on)
 {
     ESP_LOGI(TAG, "Setting mute: %s", mute_on ? "ON" : "OFF");
     current_state.mute_on = mute_on;
+    hvac_save_settings();
     return hvac_build_and_send_command();
 }
 
