@@ -107,7 +107,7 @@ static const char* hvac_decode_error_code(uint8_t code) {
         high_char = 'H' + (code_high - 0x08);  // H, I, J, K
     } else if (code_high >= 0x04 && code_high <= 0x07) {
         high_char = 'L' + (code_high - 0x04);  // L, M, N, O
-    } else if (code_high >= 0x00 && code_high <= 0x03) {
+    } else if (code_high <= 0x03) {  // 0x00-0x03
         high_char = 'P' + (code_high - 0x00);  // P, Q, R, S
     }
     
@@ -409,6 +409,13 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     
     ESP_LOGI(TAG, "Parsing 34-byte status frame...");
     
+    // Parse ambient temperature (bytes 10-11)
+    uint8_t temp_int = frame[10];
+    uint8_t temp_dec = frame[11];
+    
+    // Calculate with explicit types to avoid truncation
+    current_state.ambient_temp_c = (float)temp_int + ((float)temp_dec / 10.0f);
+    
     // Byte 13: Power, Mode, Fan
     uint8_t b13 = frame[13];
     current_state.power_on = (b13 & 0x08) != 0;
@@ -448,21 +455,12 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     current_state.purifier_on = (flags & 0x40) != 0;    // Bit 6: PURIFIER mode
     current_state.display_on = (flags & 0x80) != 0;     // Bit 7: DISPLAY on/off
     
-    // Bytes 10-11: Ambient temperature
-    if (len >= 12) {
-        uint8_t temp_int = frame[10];
-        uint8_t temp_dec = frame[11];
-        current_state.ambient_temp_c = temp_int + (temp_dec / 10.0f);
-        
-        ESP_LOGI(TAG, "Ambient temp: %.1f°C (raw: %d.%d)", 
-                 current_state.ambient_temp_c, temp_int, temp_dec);
-    }
-    
-    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C", 
+    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C, Ambient=%.1f°C", 
              current_state.power_on ? "ON" : "OFF",
              current_state.mode,
              current_state.fan_speed,
-             current_state.target_temp_c);
+             current_state.target_temp_c,
+             current_state.ambient_temp_c);
     ESP_LOGI(TAG, "  Options: Eco=%s, Night=%s, Display=%s, Purifier=%s, Clean=%s, Swing=%s", 
              current_state.eco_mode ? "ON" : "OFF",
              current_state.night_mode ? "ON" : "OFF",

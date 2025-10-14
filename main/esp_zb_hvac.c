@@ -486,6 +486,8 @@ static void hvac_update_zigbee_attributes(uint8_t param)
         return;
     }
     
+    uint8_t running_mode = 0x00;  // Declare at function scope for final log
+    
     /* Update system mode */
     uint8_t system_mode = 0x00;  // Off
     if (state.power_on) {
@@ -522,25 +524,37 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     /* Note: Running mode shows what the AC is CURRENTLY doing (idle/heat/cool/fan)
      * This is different from system mode which is what it's SET to (off/auto/cool/heat/dry/fan)
      * For AUTO/DRY modes, we report 'idle' as running mode since we don't know what it's actually doing */
-    uint8_t running_mode = 0x00;  // Off/Idle
+    running_mode = 0x00;  // Off/Idle (already declared at function scope)
     if (state.power_on) {
         switch (state.mode) {
             case HVAC_MODE_HEAT:
                 running_mode = 0x04;  // Heat mode
+                ESP_LOGD(TAG, "Running mode: HEAT (0x04)");
                 break;
             case HVAC_MODE_COOL:
                 running_mode = 0x03;  // Cool mode
+                ESP_LOGD(TAG, "Running mode: COOL (0x03)");
                 break;
             case HVAC_MODE_FAN:
                 running_mode = 0x07;  // Fan only mode
+                ESP_LOGD(TAG, "Running mode: FAN (0x07)");
                 break;
             case HVAC_MODE_AUTO:
             case HVAC_MODE_DRY:
             default:
                 running_mode = 0x00;  // Idle for auto/dry/unknown modes
+                ESP_LOGD(TAG, "Running mode: IDLE/AUTO/DRY (0x00), state.mode=%d", state.mode);
                 break;
         }
+    } else {
+        ESP_LOGD(TAG, "Running mode: OFF/IDLE (0x00)");
     }
+    
+    ESP_LOGI(TAG, "Setting running_mode=0x%02X to Zigbee (Power=%d, HVAC Mode=%d)", 
+             running_mode, state.power_on, state.mode);
+    
+    uint8_t running_mode_for_log = running_mode;  // Save for logging
+    
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
@@ -588,26 +602,20 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
                                  &state.mute_on, false);
     
-    /* Update Error/Diagnostics binary sensor - Endpoint 9 (Read-Only) */
-    bool error_active = state.error || state.filter_dirty;
-    esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
-                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &error_active, false);
-    
-    /* Update error text in Basic cluster custom attribute 0x8000 */
+    /* Update error text in Basic cluster locationDescription attribute - Endpoint 1 */
     // Zigbee string format: first byte is length, followed by chars
     char error_text_zigbee[65];  // Max 64 chars + 1 length byte
     size_t text_len = strlen(state.error_text);
     if (text_len > 64) text_len = 64;
     error_text_zigbee[0] = text_len;  // Length byte
     memcpy(&error_text_zigbee[1], state.error_text, text_len);
-    esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
+    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                 0x8000,  // Custom attribute ID in Basic cluster
+                                 ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID,
                                  error_text_zigbee, false);
     
-    /* Log error text when error is active */
+    /* Log error text when error/warning is active */
+    bool error_active = state.error || state.filter_dirty;
     if (error_active) {
         ESP_LOGW(TAG, "Error/Warning active: %s", state.error_text);
     }
@@ -625,8 +633,8 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
                                  &zigbee_fan_mode, false);
     
-    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, Temp=%d°C, Fan=%d", 
-             system_mode, state.target_temp_c, zigbee_fan_mode);
+    ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, LocalTemp=%.1f°C, TargetTemp=%d°C, Fan=%d, RunningMode=0x%02X", 
+             system_mode, state.ambient_temp_c, state.target_temp_c, zigbee_fan_mode, running_mode_for_log);
     ESP_LOGI(TAG, "  Switches: Eco=%d, Night=%d, Display=%d, Purifier=%d, Clean=%d, Swing=%d, Mute=%d", 
              state.eco_mode, state.night_mode, state.display_on, state.purifier_on, 
              state.clean_status, state.swing_on, state.mute_on);
@@ -685,6 +693,10 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, date_code);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_build_id);
+    
+    /* Add locationDescription for error text (standard Basic cluster attribute 0x0010) */
+    char location_desc[] = "\x00";  // Empty initially (length = 0)
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID, location_desc);
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_hvac_clusters, esp_zb_basic_cluster, 
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
@@ -888,35 +900,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_mute_clusters, mute_endpoint_config);
     ESP_LOGI(TAG, "[OK] Mute switch endpoint %d added", HA_ESP_MUTE_ENDPOINT);
     
-    /* Create Error/Diagnostics Binary Sensor - Endpoint 9 */
-    ESP_LOGI(TAG, "[ERROR] Creating Error diagnostics binary sensor endpoint %d...", HA_ESP_ERROR_ENDPOINT);
-    esp_zb_cluster_list_t *esp_zb_error_clusters = esp_zb_zcl_cluster_list_create();
-    esp_zb_attribute_list_t *esp_zb_error_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
-    
-    /* Add custom string attribute for error text to Basic cluster */
-    char error_text_initial[] = "\x08""No Error";  // Length-prefixed: 8 chars = "No Error"
-    esp_zb_basic_cluster_add_attr(esp_zb_error_basic_cluster, 
-                                  0x8000,  // Custom manufacturer-specific attribute ID
-                                  error_text_initial);
-    
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_error_clusters, esp_zb_error_basic_cluster,
-                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t error_on_off_cfg = {
-        .on_off = false,  // No error initially
-    };
-    esp_zb_attribute_list_t *esp_zb_error_on_off_cluster = esp_zb_on_off_cluster_create(&error_on_off_cfg);
-    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_error_clusters, esp_zb_error_on_off_cluster,
-                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    
-    esp_zb_endpoint_config_t error_endpoint_config = {
-        .endpoint = HA_ESP_ERROR_ENDPOINT,
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,  // Binary sensor as on/off device
-        .app_device_version = 0
-    };
-    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_error_clusters, error_endpoint_config);
-    ESP_LOGI(TAG, "[OK] Error diagnostics binary sensor endpoint %d added", HA_ESP_ERROR_ENDPOINT);
-    
     /* Add manufacturer info */
     ESP_LOGI(TAG, "[INFO] Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
@@ -931,7 +914,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_PURIFIER_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_CLEAN_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_MUTE_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ERROR_ENDPOINT, &info);
     ESP_LOGI(TAG, "[OK] Manufacturer info added to all endpoints");
     
     /* Register device */

@@ -219,26 +219,18 @@ const fzLocal = {
             }
         },
     },
-    error_status: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 9) {
-                return {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
     error_text: {
         cluster: 'genBasic',
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 9 && msg.data['32768'] !== undefined) {  // 0x8000 in decimal
+            if (msg.endpoint.ID === 1 && msg.data['locationDesc'] !== undefined) {
                 // Zigbee string: first byte is length, rest is text
-                const errorTextBytes = msg.data['32768'];
+                const errorTextBytes = msg.data['locationDesc'];
                 if (errorTextBytes && errorTextBytes.length > 0) {
                     const textLength = errorTextBytes[0];
                     const textData = errorTextBytes.slice(1, 1 + textLength);
-                    return {error_text: String.fromCharCode.apply(null, textData)};
+                    const errorText = String.fromCharCode.apply(null, textData);
+                    return {error_text: errorText || ''};  // Empty string when no error
                 }
             }
         },
@@ -300,7 +292,6 @@ const definition = {
         fzLocal.purifier,
         fzLocal.clean_status,
         fzLocal.mute,
-        fzLocal.error_status,
         fzLocal.error_text,
     ],
     toZigbee: [
@@ -351,18 +342,15 @@ const definition = {
         exposes.binary('mute', exposes.access.ALL, 'ON', 'OFF')
             .withDescription('Mute beep sounds on AC')
             .withEndpoint('ep8'),
-        exposes.binary('error_status', exposes.access.STATE_GET, 'ON', 'OFF')
-            .withDescription('Error or warning status from AC (read-only)')
-            .withEndpoint('ep9'),
         exposes.text('error_text', exposes.access.STATE_GET)
-            .withDescription('Error message text from AC (read-only)')
-            .withEndpoint('ep9'),
+            .withDescription('Error message text from AC (empty when no error, read-only)')
+            .withEndpoint('ep1'),
     ],
     
     // Map endpoints with descriptive names
     endpoint: (device) => {
         return {
-            'ep1': 1,          // Main thermostat
+            'ep1': 1,          // Main thermostat (includes error_text)
             'ep2': 2,          // Eco mode switch
             'ep3': 3,          // Swing switch
             'ep4': 4,          // Display switch
@@ -370,7 +358,6 @@ const definition = {
             'ep6': 6,          // Purifier switch
             'ep7': 7,          // Clean status binary sensor
             'ep8': 8,          // Mute switch
-            'ep9': 9,          // Error/diagnostics binary sensor
         };
     },
     

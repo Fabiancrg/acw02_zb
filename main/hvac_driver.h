@@ -54,7 +54,7 @@ typedef struct {
     hvac_mode_t mode;
     bool power_on;
     uint8_t target_temp_c;  // Temperature in Celsius (16-31)
-    uint8_t ambient_temp_c; // Current room temperature
+    float ambient_temp_c;   // Current room temperature (with decimal precision)
     bool eco_mode;
     bool night_mode;        // Night mode (sleep mode)
     bool display_on;
