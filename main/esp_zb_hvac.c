@@ -595,17 +595,22 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
                                  &error_active, false);
     
-    /* Update Error text - custom attribute 0x8000 */
+    /* Update error text in Basic cluster custom attribute 0x8000 */
     // Zigbee string format: first byte is length, followed by chars
-    uint8_t error_text_zigbee[65];  // Max 64 chars + 1 length byte
+    char error_text_zigbee[65];  // Max 64 chars + 1 length byte
     size_t text_len = strlen(state.error_text);
     if (text_len > 64) text_len = 64;
     error_text_zigbee[0] = text_len;  // Length byte
     memcpy(&error_text_zigbee[1], state.error_text, text_len);
-    esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+    esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                 0x8000,  // Custom attribute ID
+                                 0x8000,  // Custom attribute ID in Basic cluster
                                  error_text_zigbee, false);
+    
+    /* Log error text when error is active */
+    if (error_active) {
+        ESP_LOGW(TAG, "Error/Warning active: %s", state.error_text);
+    }
     
     /* Update Fan Mode - Endpoint 1 */
     // Report ACW02 protocol values directly to Zigbee
@@ -887,6 +892,13 @@ static void esp_zb_task(void *pvParameters)
     ESP_LOGI(TAG, "[ERROR] Creating Error diagnostics binary sensor endpoint %d...", HA_ESP_ERROR_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_error_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_error_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    
+    /* Add custom string attribute for error text to Basic cluster */
+    char error_text_initial[] = "\x08""No Error";  // Length-prefixed: 8 chars = "No Error"
+    esp_zb_basic_cluster_add_attr(esp_zb_error_basic_cluster, 
+                                  0x8000,  // Custom manufacturer-specific attribute ID
+                                  error_text_initial);
+    
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_error_clusters, esp_zb_error_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_on_off_cluster_cfg_t error_on_off_cfg = {
@@ -895,17 +907,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_attribute_list_t *esp_zb_error_on_off_cluster = esp_zb_on_off_cluster_create(&error_on_off_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_error_clusters, esp_zb_error_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    
-    // Add custom attribute for error text (manufacturer-specific string)
-    // Using manufacturer code 0x1234 and attribute ID 0x8000 for error text
-    uint8_t error_text_initial[] = "No Error";
-    esp_zb_attribute_list_t *error_on_off_cluster_list = esp_zb_error_on_off_cluster;
-    esp_zb_custom_cluster_add_custom_attr(error_on_off_cluster_list, 
-                                          ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING,
-                                          ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-                                          0x8000,  // Custom attribute ID for error text
-                                          error_text_initial,
-                                          sizeof(error_text_initial));
     
     esp_zb_endpoint_config_t error_endpoint_config = {
         .endpoint = HA_ESP_ERROR_ENDPOINT,

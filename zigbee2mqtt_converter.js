@@ -224,18 +224,22 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             if (msg.endpoint.ID === 9) {
-                const result = {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-                // Also read the error text if available (custom attribute 0x8000)
-                if (msg.data['32768'] !== undefined) {  // 0x8000 in decimal
-                    // Zigbee string: first byte is length, rest is text
-                    const errorTextBytes = msg.data['32768'];
-                    if (errorTextBytes && errorTextBytes.length > 0) {
-                        const textLength = errorTextBytes[0];
-                        const textData = errorTextBytes.slice(1, 1 + textLength);
-                        result.error_text = String.fromCharCode.apply(null, textData);
-                    }
+                return {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
+            }
+        },
+    },
+    error_text: {
+        cluster: 'genBasic',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 9 && msg.data['32768'] !== undefined) {  // 0x8000 in decimal
+                // Zigbee string: first byte is length, rest is text
+                const errorTextBytes = msg.data['32768'];
+                if (errorTextBytes && errorTextBytes.length > 0) {
+                    const textLength = errorTextBytes[0];
+                    const textData = errorTextBytes.slice(1, 1 + textLength);
+                    return {error_text: String.fromCharCode.apply(null, textData)};
                 }
-                return result;
             }
         },
     },
@@ -297,6 +301,7 @@ const definition = {
         fzLocal.clean_status,
         fzLocal.mute,
         fzLocal.error_status,
+        fzLocal.error_text,
     ],
     toZigbee: [
         tz.thermostat_local_temperature,
@@ -350,7 +355,7 @@ const definition = {
             .withDescription('Error or warning status from AC (read-only)')
             .withEndpoint('ep9'),
         exposes.text('error_text', exposes.access.STATE_GET)
-            .withDescription('Error message text (read-only)')
+            .withDescription('Error message text from AC (read-only)')
             .withEndpoint('ep9'),
     ],
     

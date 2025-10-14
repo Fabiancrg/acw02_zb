@@ -1,7 +1,7 @@
 # Error Diagnostics Endpoint Implementation
 
 ## Overview
-Implemented **Endpoint 9** to expose AC error/warning diagnostics via Zigbee with human-readable error messages.
+Implemented **Endpoint 9** to expose AC error/warning diagnostics via Zigbee with a binary sensor. Error details are logged to console with human-readable descriptions.
 
 ## Implementation Details
 
@@ -44,23 +44,20 @@ static const char* hvac_decode_error_code(uint8_t code)
 1. **Standard On/Off** (0x0000): 
    - `true` = Error or warning active
    - `false` = No error
-   
-2. **Custom String Attribute** (0x8000):
-   - Manufacturer-specific attribute
-   - Contains error message text (up to 64 chars)
-   - Format: Zigbee string (length byte + text)
-   - Examples: "FAULT 0xE1: Overload protection"
+
+**Note**: Error text is logged to console but not exposed via Zigbee (ESP-Zigbee doesn't easily support custom attributes). Check device logs for detailed error descriptions.
 
 ### Zigbee Attribute Updates
 In `hvac_update_zigbee_attributes()`:
 ```c
 // Update error status: ON if error OR filter_dirty
 bool error_active = state.error || state.filter_dirty;
+esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ...);
 
-// Update error text with proper Zigbee string format
-uint8_t error_text_zigbee[65];  // length + 64 chars max
-error_text_zigbee[0] = text_length;
-memcpy(&error_text_zigbee[1], state.error_text, text_length);
+// Log error text when active
+if (error_active) {
+    ESP_LOGW(TAG, "Error/Warning active: %s", state.error_text);
+}
 ```
 
 ### Zigbee2MQTT Integration
@@ -74,15 +71,7 @@ error_status: {
     type: ['attributeReport', 'readResponse'],
     convert: (model, msg, publish, options, meta) => {
         if (msg.endpoint.ID === 9) {
-            const result = {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            // Also decode custom attribute 0x8000 (32768 decimal)
-            if (msg.data['32768'] !== undefined) {
-                const errorTextBytes = msg.data['32768'];
-                const textLength = errorTextBytes[0];
-                const textData = errorTextBytes.slice(1, 1 + textLength);
-                result.error_text = String.fromCharCode.apply(null, textData);
-            }
-            return result;
+            return {error_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
         }
     }
 }
@@ -90,8 +79,7 @@ error_status: {
 
 **2. Exposed Properties:**
 - `error_status` (binary): ON/OFF - Read-only
-- `error_text` (text): Error description - Read-only
-- Both on endpoint `ep9`
+- On endpoint `ep9`
 
 **3. Configure/Reporting:**
 - Endpoint 9 bound to coordinator
@@ -103,13 +91,17 @@ error_status: {
 When error occurs, Z2M will show:
 ```
 Error Status: ON
-Error Text: "FAULT 0xE1: Overload protection"
 ```
 
 When no error:
 ```
 Error Status: OFF
-Error Text: "No Error"
+```
+
+**To see error details**: Check the ESP32 console logs, which will show messages like:
+```
+E (1016) HVAC_DRIVER: AC FAULT: code=0xE1 - Overload protection
+W (1026) HVAC_ZIGBEE: Error/Warning active: FAULT 0xE1: Overload protection
 ```
 
 ## Error Code Examples
@@ -133,12 +125,13 @@ Full list: See `doc/error_codes.csv`
 
 ## Benefits
 
-1. **Real-time Error Monitoring**: Errors appear immediately in Z2M
-2. **Human-Readable Messages**: No need to look up error codes manually
-3. **Standardized Zigbee**: Uses standard Binary Sensor cluster
+1. **Real-time Error Monitoring**: Errors appear immediately in Z2M as binary status
+2. **Human-Readable Messages**: Error descriptions logged to console for diagnosis
+3. **Standardized Zigbee**: Uses standard Binary Sensor cluster (no custom attributes)
 4. **Comprehensive Coverage**: All 53 AIRTON error codes supported
 5. **Read-Only Protection**: Error status can't be accidentally changed via Z2M
 6. **Automatic Updates**: Error status pushed to Z2M via reporting
+7. **Console Diagnostics**: Full error text available in device logs
 
 ## Testing
 
@@ -147,19 +140,27 @@ To test error diagnostics:
 2. Pair with Zigbee2MQTT
 3. Reconfigure device in Z2M UI
 4. Wait for AC to report an error condition (or simulate one)
-5. Check Z2M for `error_status` and `error_text` properties on endpoint 9
+5. Check Z2M for `error_status` property on endpoint 9
+6. Check ESP32 console logs for detailed error message text
 
 ## Files Modified
 
 - `main/esp_zb_hvac.h` - Added HA_ESP_ERROR_ENDPOINT (9)
-- `main/esp_zb_hvac.c` - Created endpoint 9, updated attributes
+- `main/esp_zb_hvac.c` - Created endpoint 9, updated error status attribute
 - `main/hvac_driver.c` - Added error code table and decoder
-- `zigbee2mqtt_converter.js` - Added error_status converter and exposes
+- `zigbee2mqtt_converter.js` - Added error_status converter and expose
 - `doc/error_codes.csv` - Error code reference (user-created)
+
+## Limitations
+
+- **Error text not in Zigbee**: Due to ESP-Zigbee library limitations, custom attributes for error text are not easily supported. Error descriptions are logged to console instead.
+- **Workaround**: Monitor ESP32 logs via USB serial to see detailed error messages
+- **Future Enhancement**: May add MQTT bridge or web server to expose error text remotely
 
 ## Next Steps
 
 1. Build and flash firmware
 2. Test with physical AC
-3. Verify error messages appear in Z2M
-4. Document any additional error codes if found
+3. Verify error status appears in Z2M
+4. Verify error descriptions appear in ESP32 console logs
+5. Document any additional error codes if found
