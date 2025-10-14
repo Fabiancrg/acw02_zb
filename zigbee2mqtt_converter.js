@@ -416,20 +416,30 @@ const definition = {
         await reporting.onOff(endpoint8);
     },
     
-    // Poll unreportable attributes on device events
-    onEvent: async (type, data, device) => {
-        // Poll running_mode when device announces or on periodic poll
-        if (type === 'deviceAnnounce' || type === 'stop') {
-            const endpoint1 = device.getEndpoint(1);
-            if (endpoint1) {
-                try {
-                    // Read runningMode, systemMode, and setpoints since they're not reportable
-                    await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
-                                                            'occupiedHeatingSetpoint', 
-                                                            'occupiedCoolingSetpoint']);
-                } catch (error) {
-                    // Silently ignore read errors during startup
-                }
+    // Poll unreportable attributes on device events and periodically
+    onEvent: async (type, data, device, options) => {
+        const endpoint1 = device.getEndpoint(1);
+        if (!endpoint1) return;
+        
+        // Poll on device announce, stop, or any message from the device
+        // This ensures we get updates when state changes
+        const shouldPoll = type === 'deviceAnnounce' || type === 'stop' || type === 'message';
+        
+        if (shouldPoll) {
+            try {
+                // Read thermostat attributes (runningMode, systemMode, setpoints)
+                await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
+                                                        'occupiedHeatingSetpoint', 
+                                                        'occupiedCoolingSetpoint']);
+            } catch (error) {
+                // Silently ignore read errors
+            }
+            
+            try {
+                // Read error text from locationDescription in Basic cluster
+                await endpoint1.read('genBasic', ['locationDesc']);
+            } catch (error) {
+                // Silently ignore read errors
             }
         }
     },
