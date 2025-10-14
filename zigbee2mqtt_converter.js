@@ -282,6 +282,11 @@ const definition = {
     vendor: 'ESPRESSIF',
     description: 'ACW02 HVAC Thermostat Controller via Zigbee',
     
+    // Enable meta.device.poll() for unreportable attributes
+    meta: {
+        multiEndpoint: true,
+    },
+    
     // Supported features
     fromZigbee: [
         fzLocal.thermostat_ep1,  // Custom thermostat converter with _ep1 suffix
@@ -417,63 +422,73 @@ const definition = {
         const endpoint8 = device.getEndpoint(8);
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
+        
+        // Initial read of unreportable attributes
+        try {
+            await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode']);
+            await endpoint1.read('genBasic', ['locationDesc']);
+        } catch (error) {
+            // Ignore errors on initial read
+        }
     },
     
-    // Poll unreportable attributes on device events and with periodic timer
-    onEvent: async (type, data, device, options, state) => {
+    // Define options to enable polling
+    options: [
+        {
+            name: 'state_poll_interval',
+            type: 'number',
+            description: 'Interval (in seconds) to poll unreportable attributes (runningMode, error_text). Default: 30 seconds. Set to 0 to disable.',
+            default: 30,
+        },
+    ],
+    
+    // Poll unreportable attributes periodically
+    onEvent: async (type, data, device, options) => {
         const endpoint1 = device.getEndpoint(1);
         if (!endpoint1) return;
         
-        // Helper function to poll unreportable attributes
-        const pollAttributes = async () => {
+        // Poll function to read unreportable attributes
+        const poll = async () => {
             try {
-                // Read thermostat attributes (runningMode is unreportable, needs polling)
                 await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
                                                         'occupiedHeatingSetpoint', 
                                                         'occupiedCoolingSetpoint']);
-            } catch (error) {
-                // Silently ignore read errors (device may be offline or busy)
+            } catch (e) {
+                // Ignore errors
             }
             
             try {
-                // Read error text from locationDescription in Basic cluster
                 await endpoint1.read('genBasic', ['locationDesc']);
-            } catch (error) {
-                // Silently ignore read errors
+            } catch (e) {
+                // Ignore errors
             }
         };
         
-        // Poll immediately on device announce or message events
-        if (type === 'deviceAnnounce' || type === 'message') {
-            await pollAttributes();
-        }
+        // Get poll interval from options (default 30 seconds)
+        const pollInterval = options?.state_poll_interval !== undefined ? options.state_poll_interval : 30;
         
-        // Set up periodic polling when Z2M starts OR when device joins network
-        // This ensures timer starts even if device joins after Z2M is already running
-        if (type === 'start' || type === 'deviceAnnounce') {
-            // Use device-specific timer key to support multiple devices
-            const timerKey = `acw02PollTimer_${device.ieeeAddr}`;
-            
-            // Clear any existing timer for this device
-            if (globalThis[timerKey]) {
-                clearInterval(globalThis[timerKey]);
-            }
-            
-            // Start new polling timer (default: 30 seconds, configurable)
-            const pollInterval = (options && options.state_poll_interval) || 30;
-            if (pollInterval > 0) {
-                globalThis[timerKey] = setInterval(async () => {
-                    await pollAttributes();
-                }, pollInterval * 1000);
-            }
-        }
+        // Device-specific timer key
+        const timerKey = `pollTimer_${device.ieeeAddr}`;
         
-        // Clean up timer on stop
         if (type === 'stop') {
-            const timerKey = `acw02PollTimer_${device.ieeeAddr}`;
+            // Clean up timer when Z2M stops
             if (globalThis[timerKey]) {
                 clearInterval(globalThis[timerKey]);
-                globalThis[timerKey] = null;
+                delete globalThis[timerKey];
+            }
+        } else {
+            // For any other event, ensure timer is running
+            if (pollInterval > 0 && !globalThis[timerKey]) {
+                // Poll immediately
+                await poll();
+                
+                // Set up periodic timer
+                globalThis[timerKey] = setInterval(() => {
+                    poll().catch(() => {/* Ignore errors */});
+                }, pollInterval * 1000);
+            } else if (type === 'deviceAnnounce' || type === 'message') {
+                // Poll on these events even if timer exists
+                await poll();
             }
         }
     },
