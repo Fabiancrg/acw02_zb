@@ -376,11 +376,12 @@ const definition = {
         ]);
         
         // Configure reporting for thermostat attributes
-        // Only localTemp (current temperature) is reportable
+        // localTemp (current temperature) is reportable
         await reporting.thermostatTemperature(endpoint1);
-        // Note: systemMode, occupiedHeatingSetpoint, occupiedCoolingSetpoint, and fanMode are NOT reportable
-        // These are writable/control attributes, not sensor readings
-        // Z2M will poll these when needed
+        
+        // Note: runningMode, systemMode, occupiedHeatingSetpoint, occupiedCoolingSetpoint, 
+        // and fanMode are NOT reportable attributes in ESP-Zigbee stack
+        // Z2M will poll these when needed or they can be read manually
         
         // Bind and configure endpoint 2 (Eco mode)
         await reporting.bind(endpoint2, coordinatorEndpoint, ['genOnOff']);
@@ -413,6 +414,24 @@ const definition = {
         const endpoint8 = device.getEndpoint(8);
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
+    },
+    
+    // Poll unreportable attributes on device events
+    onEvent: async (type, data, device) => {
+        // Poll running_mode when device announces or on periodic poll
+        if (type === 'deviceAnnounce' || type === 'stop') {
+            const endpoint1 = device.getEndpoint(1);
+            if (endpoint1) {
+                try {
+                    // Read runningMode, systemMode, and setpoints since they're not reportable
+                    await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
+                                                            'occupiedHeatingSetpoint', 
+                                                            'occupiedCoolingSetpoint']);
+                } catch (error) {
+                    // Silently ignore read errors during startup
+                }
+            }
+        }
     },
 };
 

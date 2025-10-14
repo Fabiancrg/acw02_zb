@@ -553,12 +553,14 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     ESP_LOGI(TAG, "Setting running_mode=0x%02X to Zigbee (Power=%d, HVAC Mode=%d)", 
              running_mode, state.power_on, state.mode);
     
-    uint8_t running_mode_for_log = running_mode;  // Save for logging
-    
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
                                  &running_mode, false);
+    
+    /* Note: running_mode is not auto-reportable in ESP-Zigbee stack.
+     * Z2M will read this attribute when needed (e.g., on state refresh or polling).
+     * The attribute is correctly set above and will be available for reads. */
     
     /* Update Eco Mode switch state - Endpoint 2 */
     esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
@@ -634,7 +636,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  &zigbee_fan_mode, false);
     
     ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, LocalTemp=%.1f°C, TargetTemp=%d°C, Fan=%d, RunningMode=0x%02X", 
-             system_mode, state.ambient_temp_c, state.target_temp_c, zigbee_fan_mode, running_mode_for_log);
+             system_mode, state.ambient_temp_c, state.target_temp_c, zigbee_fan_mode, running_mode);
     ESP_LOGI(TAG, "  Switches: Eco=%d, Night=%d, Display=%d, Purifier=%d, Clean=%d, Swing=%d, Mute=%d", 
              state.eco_mode, state.night_mode, state.display_on, state.purifier_on, 
              state.clean_status, state.swing_on, state.mute_on);
