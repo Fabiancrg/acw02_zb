@@ -5,10 +5,12 @@
 | Supported Targets | ESP32-C6 | ESP32-H2 |
 | ----------------- |  -------- | -------- |
 
+# ACW02-ZB Zigbee HVAC Thermostat Controller
+
+[![License: GPL v3](https://img.shields.io/badge/Software-GPLv3-blue.svg)](./LICENSE)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/Hardware-CC%20BY--NC--SA%204.0-green.svg)](./LICENSE-hardware)
+
 # Project Description
-
-## ACW02-ZB Zigbee HVAC Thermostat Controller
-
 ACW02-ZB is an open-source Zigbee-enabled HVAC controller for the AIRTON (to replace ACW02 WiFi module) series and compatible units. It allows full integration with Zigbee2MQTT, Home Assistant, and other Zigbee ecosystems, providing remote control, monitoring, and diagnostics for air conditioning systems.
 
 ### Key Features
@@ -40,11 +42,6 @@ ACW02-ZB is an open-source Zigbee-enabled HVAC controller for the AIRTON (to rep
 See the documentation files for advanced features, troubleshooting, and hardware details.
 
 ---
-
-# ACW02-ZB Zigbee HVAC Thermostat Controller
-
-[![License: GPL v3](https://img.shields.io/badge/Software-GPLv3-blue.svg)](./LICENSE)
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/Hardware-CC%20BY--NC--SA%204.0-green.svg)](./LICENSE-hardware)
 
 
 # 🙌 Credits
