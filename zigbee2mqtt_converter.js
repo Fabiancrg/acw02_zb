@@ -69,6 +69,19 @@ const fzLocal = {
         },
     },
 
+    // Read-only binary sensor for clean status (endpoint 7)
+    clean_status: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 7 && msg.data.hasOwnProperty('onOff')) {
+                const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
+                meta.logger.info(`ACW02 fz.clean_status: Filter cleaning status: ${state}`);
+                return {clean_status: state};
+            }
+        },
+    },
+
     error_text: {
         cluster: 'genBasic',
         type: ['attributeReport', 'readResponse'],
@@ -150,7 +163,8 @@ const definition = {
     fromZigbee: [
         fzLocal.thermostat,   // Custom thermostat converter
         fzLocal.fan_mode,
-        fz.on_off,            // Standard on/off for all switch endpoints
+        fzLocal.clean_status, // Read-only binary sensor for endpoint 7
+        fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8)
         fzLocal.error_text,
     ],
     toZigbee: [
@@ -159,8 +173,8 @@ const definition = {
         tz.thermostat_occupied_cooling_setpoint,
         tz.thermostat_system_mode,
         tzLocal.fan_mode,
-        tz.on_off,              // Standard on/off for all switch endpoints
-        // Note: clean_status is read-only (from AC), so only fz converter needed
+        tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7
+        // Note: clean_status (endpoint 7) is read-only, no toZigbee converter
     ],
     
     // Expose controls in the UI
@@ -180,7 +194,7 @@ const definition = {
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
-        e.switch().withEndpoint('clean_status').withDescription('Filter cleaning status (read-only from AC)'),
+        e.binary().withEndpoint('clean_status').withValueToggle('ON', 'OFF').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
