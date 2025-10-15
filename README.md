@@ -1,3 +1,6 @@
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Fabiancrg)
+
+
 | Supported Targets | ESP32-C6 | ESP32-H2 |
 | ----------------- |  -------- | -------- |
 
