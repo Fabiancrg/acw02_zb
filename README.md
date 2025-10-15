@@ -43,14 +43,13 @@ See the documentation files for advanced features, troubleshooting, and hardware
 
 ---
 
+## 🙌 Credits
 
-# 🙌 Credits
+- Original HVAC reverse‑engineering and ESPHome work: [devildant/acw02_esphome](https://github.com/devildant/acw02_esphome)  
+- Zigbee2MQTT ecosystem: [Koenkk/zigbee2mqtt](https://github.com/Koenkk/zigbee2mqtt) and [zigbee-herdsman-converters](https://github.com/Koenkk/zigbee-herdsman-converters)
 
-Original HVAC reverse‑engineering and ESPHome work: acw02_esphome
 
-Zigbee2MQTT ecosystem: Koenkk/zigbee2mqtt and zigbee-herdsman-converters
-
-# 🛡️ License
+## 🛡️ License
 
 This repository uses multiple licenses depending on content type:
 
