@@ -240,6 +240,10 @@ const definition = {
         const endpoint2 = device.getEndpoint(2);
         const endpoint3 = device.getEndpoint(3);
         const endpoint4 = device.getEndpoint(4);
+        const endpoint5 = device.getEndpoint(5);
+        const endpoint6 = device.getEndpoint(6);
+        const endpoint7 = device.getEndpoint(7);
+        const endpoint8 = device.getEndpoint(8);
         
         // Bind clusters for main thermostat (endpoint 1)
         await reporting.bind(endpoint1, coordinatorEndpoint, [
@@ -271,22 +275,18 @@ const definition = {
         await reporting.onOff(endpoint4);
         
         // Bind and configure endpoint 5 (Night mode)
-        const endpoint5 = device.getEndpoint(5);
         await reporting.bind(endpoint5, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint5);
         
         // Bind and configure endpoint 6 (Purifier)
-        const endpoint6 = device.getEndpoint(6);
         await reporting.bind(endpoint6, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint6);
         
         // Bind and configure endpoint 7 (Clean status - read-only)
-        const endpoint7 = device.getEndpoint(7);
         await reporting.bind(endpoint7, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint7);
         
         // Bind and configure endpoint 8 (Mute)
-        const endpoint8 = device.getEndpoint(8);
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
         
