@@ -103,14 +103,14 @@ const fzLocal = {
             }
         },
     },
-    // Custom converter for thermostat to add _ep1 suffix for endpoint 1
-    thermostat_ep1: {
+    // Custom converter for thermostat attributes
+    thermostat: {
         cluster: 'hvacThermostat',
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const result = {};
             if (msg.data.hasOwnProperty('localTemp')) {
-                result.local_temperature_ep1 = msg.data.localTemp / 100;
+                result.local_temperature = msg.data.localTemp / 100;
             }
             if (msg.data.hasOwnProperty('runningMode')) {
                 // runningMode is an 8-bit enum: 0x00=idle, 0x03=cool, 0x04=heat, 0x07=fan
@@ -120,7 +120,7 @@ const fzLocal = {
                     0x04: 'heat',
                     0x07: 'fan_only',
                 };
-                result.running_state_ep1 = modeMap[msg.data.runningMode] || 'idle';
+                result.running_state = modeMap[msg.data.runningMode] || 'idle';
             }
             if (msg.data.hasOwnProperty('systemMode')) {
                 const sysModeMap = {
@@ -131,13 +131,13 @@ const fzLocal = {
                     0x07: 'fan_only',
                     0x08: 'dry',
                 };
-                result.system_mode_ep1 = sysModeMap[msg.data.systemMode] || 'off';
+                result.system_mode = sysModeMap[msg.data.systemMode] || 'off';
             }
             if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
-                result.occupied_heating_setpoint_ep1 = msg.data.occupiedHeatingSetpoint / 100;
+                result.occupied_heating_setpoint = msg.data.occupiedHeatingSetpoint / 100;
             }
             if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
-                result.occupied_cooling_setpoint_ep1 = msg.data.occupiedCoolingSetpoint / 100;
+                result.occupied_cooling_setpoint = msg.data.occupiedCoolingSetpoint / 100;
             }
             return result;
         },
@@ -184,9 +184,9 @@ const definition = {
     
     // Supported features
     fromZigbee: [
-        fzLocal.thermostat_ep1,  // Custom thermostat converter with _ep1 suffix
+        fzLocal.thermostat,   // Custom thermostat converter
         fzLocal.fan_mode,
-        fz.on_off,               // Standard on/off for all switch endpoints (eco, swing, display, night, purifier, mute, clean)
+        fz.on_off,            // Standard on/off for all switch endpoints
         fzLocal.error_text,
     ],
     toZigbee: [
@@ -206,48 +206,31 @@ const definition = {
             .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
-            .withRunningState(['idle', 'heat', 'cool', 'fan_only'])
-            .withEndpoint('ep1'),
+            .withRunningState(['idle', 'heat', 'cool', 'fan_only']),
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
-            .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO')
-            .withEndpoint('ep1'),
-        exposes.binary('eco_mode', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Eco mode')
-            .withEndpoint('ep2'),
-        exposes.binary('swing_mode', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Swing mode')
-            .withEndpoint('ep3'),
-        exposes.binary('display', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Display on/off')
-            .withEndpoint('ep4'),
-        exposes.binary('night_mode', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Night mode (sleep mode with adjusted settings)')
-            .withEndpoint('ep5'),
-        exposes.binary('purifier', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Air purifier/ionizer')
-            .withEndpoint('ep6'),
-        exposes.binary('clean_status', exposes.access.STATE_GET, 'ON', 'OFF')
-            .withDescription('Filter cleaning status (read-only from AC)')
-            .withEndpoint('ep7'),
-        exposes.binary('mute', exposes.access.ALL, 'ON', 'OFF')
-            .withDescription('Mute beep sounds on AC')
-            .withEndpoint('ep8'),
+            .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO'),
         exposes.text('error_text', exposes.access.STATE_GET)
-            .withDescription('Error message text from AC (empty when no error, read-only)')
-            .withEndpoint('ep1'),
+            .withDescription('Error message text from AC (empty when no error, read-only)'),
+        e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
+        e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
+        e.switch().withEndpoint('display').withDescription('Display on/off'),
+        e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
+        e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
+        e.switch().withEndpoint('clean_status').withDescription('Filter cleaning status (read-only from AC)'),
+        e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
     // Map endpoints with descriptive names
     endpoint: (device) => {
         return {
-            'ep1': 1,          // Main thermostat (includes error_text)
-            'ep2': 2,          // Eco mode switch
-            'ep3': 3,          // Swing switch
-            'ep4': 4,          // Display switch
-            'ep5': 5,          // Night mode switch
-            'ep6': 6,          // Purifier switch
-            'ep7': 7,          // Clean status binary sensor
-            'ep8': 8,          // Mute switch
+            'default': 1,      // Main thermostat
+            'eco_mode': 2,     // Eco mode switch
+            'swing_mode': 3,   // Swing switch
+            'display': 4,      // Display switch
+            'night_mode': 5,   // Night mode switch
+            'purifier': 6,     // Purifier switch
+            'clean_status': 7, // Clean status binary sensor
+            'mute': 8,         // Mute switch
         };
     },
     
