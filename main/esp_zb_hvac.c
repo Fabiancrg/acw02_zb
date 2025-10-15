@@ -265,6 +265,41 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         }
         break;
         
+    case ESP_ZB_ZDO_SIGNAL_LEAVE:
+        ESP_LOGW(TAG, "[LEAVE] *** DEVICE LEFT THE NETWORK ***");
+        if (err_status == ESP_OK) {
+            esp_zb_zdo_signal_leave_params_t *leave_params = 
+                (esp_zb_zdo_signal_leave_params_t *)esp_zb_app_signal_get_params(p_sg_p);
+            
+            if (leave_params) {
+                ESP_LOGW(TAG, "[LEAVE] Leave type: %s", 
+                        leave_params->leave_type == 0 ? "RESET (no rejoin)" : "REJOIN");
+                
+                if (leave_params->leave_type == 0) {
+                    // Device was removed from coordinator (factory reset type leave)
+                    ESP_LOGW(TAG, "[LEAVE] Device was removed from the coordinator");
+                    ESP_LOGW(TAG, "[LEAVE] Waiting 30 seconds before attempting to rejoin...");
+                    
+                    // Schedule rejoin after 30 seconds
+                    esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
+                                          ESP_ZB_BDB_MODE_NETWORK_STEERING, 30000);
+                    
+                    ESP_LOGI(TAG, "[LEAVE] Auto-rejoin scheduled in 30 seconds");
+                } else {
+                    // Leave with rejoin flag - device will rejoin automatically
+                    ESP_LOGI(TAG, "[LEAVE] Leave with rejoin - device will rejoin automatically");
+                }
+            } else {
+                ESP_LOGW(TAG, "[LEAVE] No leave parameters available");
+                ESP_LOGW(TAG, "[LEAVE] Scheduling rejoin attempt in 30 seconds...");
+                esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb,
+                                      ESP_ZB_BDB_MODE_NETWORK_STEERING, 30000);
+            }
+        } else {
+            ESP_LOGE(TAG, "[LEAVE] Leave error: %s", esp_err_to_name(err_status));
+        }
+        break;
+        
     case ESP_ZB_BDB_SIGNAL_STEERING:
         ESP_LOGI(TAG, "[JOIN] Steering signal received (status: %s)", esp_err_to_name(err_status));
         if (err_status == ESP_OK) {
