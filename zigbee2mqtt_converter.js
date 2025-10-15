@@ -285,6 +285,33 @@ const definition = {
     // Enable meta.device.poll() for unreportable attributes
     meta: {
         multiEndpoint: true,
+        poll: {
+            // Poll interval in seconds (default 30, overridable via device options)
+            interval: (device) => device.options?.state_poll_interval ?? 30,
+            read: async (device) => {
+                const endpoint1 = device.getEndpoint(1);
+                if (!endpoint1) return;
+                
+                // Read unreportable thermostat attributes
+                try {
+                    await endpoint1.read('hvacThermostat', [
+                        'runningMode',
+                        'systemMode',
+                        'occupiedHeatingSetpoint',
+                        'occupiedCoolingSetpoint',
+                    ]);
+                } catch (error) {
+                    // Silently ignore read errors (device may be offline or busy)
+                }
+                
+                // Read error text from locationDescription
+                try {
+                    await endpoint1.read('genBasic', ['locationDesc']);
+                } catch (error) {
+                    // Silently ignore read errors
+                }
+            },
+        },
     },
     
     // Supported features
@@ -432,66 +459,15 @@ const definition = {
         }
     },
     
-    // Define options to enable polling
+    // Options for configurable polling interval
     options: [
         {
             name: 'state_poll_interval',
             type: 'number',
-            description: 'Interval (in seconds) to poll unreportable attributes (runningMode, error_text). Default: 30 seconds. Set to 0 to disable.',
+            description: 'Interval (in seconds) to poll unreportable attributes (runningMode, error_text). Default: 30 seconds. Set to 0 to disable polling.',
             default: 30,
         },
     ],
-    
-    // Poll unreportable attributes periodically
-    onEvent: async (type, data, device, options) => {
-        const endpoint1 = device.getEndpoint(1);
-        if (!endpoint1) return;
-        
-        // Poll function to read unreportable attributes
-        const poll = async () => {
-            try {
-                await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode', 
-                                                        'occupiedHeatingSetpoint', 
-                                                        'occupiedCoolingSetpoint']);
-            } catch (e) {
-                // Ignore errors
-            }
-            
-            try {
-                await endpoint1.read('genBasic', ['locationDesc']);
-            } catch (e) {
-                // Ignore errors
-            }
-        };
-        
-        // Get poll interval from options (default 30 seconds)
-        const pollInterval = options?.state_poll_interval !== undefined ? options.state_poll_interval : 30;
-        
-        // Device-specific timer key
-        const timerKey = `pollTimer_${device.ieeeAddr}`;
-        
-        if (type === 'stop') {
-            // Clean up timer when Z2M stops
-            if (globalThis[timerKey]) {
-                clearInterval(globalThis[timerKey]);
-                delete globalThis[timerKey];
-            }
-        } else {
-            // For any other event, ensure timer is running
-            if (pollInterval > 0 && !globalThis[timerKey]) {
-                // Poll immediately
-                await poll();
-                
-                // Set up periodic timer
-                globalThis[timerKey] = setInterval(() => {
-                    poll().catch(() => {/* Ignore errors */});
-                }, pollInterval * 1000);
-            } else if (type === 'deviceAnnounce' || type === 'message') {
-                // Poll on these events even if timer exists
-                await poll();
-            }
-        }
-    },
 };
 
 module.exports = definition;
