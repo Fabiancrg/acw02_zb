@@ -62,7 +62,9 @@ const fzLocal = {
                     0x06: 'quiet',    // SILENT
                     0x0D: 'quiet',    // TURBO (map to quiet for now)
                 };
-                return {fan_mode: fanModeMap[msg.data.fanMode]};
+                const result = {fan_mode: fanModeMap[msg.data.fanMode]};
+                meta.logger.info(`ACW02 fz.fan_mode: Received fanMode=0x${msg.data.fanMode.toString(16)} -> ${result.fan_mode}`);
+                return result;
             }
         },
     },
@@ -72,12 +74,15 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             if (msg.endpoint.ID === 1 && msg.data['locationDesc'] !== undefined) {
+                meta.logger.debug(`ACW02 fz.error_text: Raw locationDesc data type: ${typeof msg.data['locationDesc']}, value: ${JSON.stringify(msg.data['locationDesc'])}`);
+                
                 // Zigbee string: first byte is length, rest is text
                 const errorTextBytes = msg.data['locationDesc'];
                 if (errorTextBytes && errorTextBytes.length > 0) {
                     const textLength = errorTextBytes[0];
                     const textData = errorTextBytes.slice(1, 1 + textLength);
                     const errorText = String.fromCharCode.apply(null, textData);
+                    meta.logger.info(`ACW02 fz.error_text: Decoded error text: "${errorText}"`);
                     return {error_text: errorText || ''};  // Empty string when no error
                 }
             }
@@ -101,6 +106,7 @@ const fzLocal = {
                     0x07: 'fan_only',
                 };
                 result.running_state = modeMap[msg.data.runningMode] || 'idle';
+                meta.logger.info(`ACW02 fz.thermostat: runningMode=0x${msg.data.runningMode.toString(16)} -> ${result.running_state}`);
             }
             if (msg.data.hasOwnProperty('systemMode')) {
                 const sysModeMap = {
@@ -112,6 +118,7 @@ const fzLocal = {
                     0x08: 'dry',
                 };
                 result.system_mode = sysModeMap[msg.data.systemMode] || 'off';
+                meta.logger.info(`ACW02 fz.thermostat: systemMode=0x${msg.data.systemMode.toString(16)} -> ${result.system_mode}`);
             }
             if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
                 result.occupied_heating_setpoint = msg.data.occupiedHeatingSetpoint / 100;
@@ -119,6 +126,11 @@ const fzLocal = {
             if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
                 result.occupied_cooling_setpoint = msg.data.occupiedCoolingSetpoint / 100;
             }
+            
+            if (Object.keys(result).length > 0) {
+                meta.logger.debug(`ACW02 fz.thermostat: Converted attributes: ${JSON.stringify(result)}`);
+            }
+            
             return result;
         },
     },
@@ -251,40 +263,60 @@ const definition = {
         }
     },
     
-    onEvent: async (type, data, device, options) => {
+    onEvent: async (type, data, device, options, logger) => {
+        // Log ALL events to debug the polling framework
+        logger.info(`ACW02 onEvent: type='${type}', device='${device.ieeeAddr}'`);
+        
         // Z2M's generic polling framework triggers 'interval' events
         // when exposes.options.measurement_poll_interval() is defined
         if (type === 'interval') {
-            const endpoint1 = device.getEndpoint(1);
-            if (!endpoint1) return;
+            logger.info(`ACW02 POLLING TRIGGERED for ${device.ieeeAddr}`);
             
-            if (options?.debug) logger.debug(`Start polling`);
-
+            const endpoint1 = device.getEndpoint(1);
+            if (!endpoint1) {
+                logger.warn(`ACW02 polling: endpoint 1 not found`);
+                return;
+            }
+            
             // Poll unreportable thermostat attributes
             try {
-                await endpoint1.read('hvacThermostat', [
+                logger.debug(`ACW02 polling: Reading hvacThermostat attributes...`);
+                const thermostatData = await endpoint1.read('hvacThermostat', [
                     'runningMode',
                     'systemMode',
                     'occupiedHeatingSetpoint',
                     'occupiedCoolingSetpoint',
                 ]);
+                logger.info(`ACW02 polling: hvacThermostat read successful: ${JSON.stringify(thermostatData)}`);
             } catch (error) {
-                if (options?.debug) logger.debug(`Polling error: ${error}`);
+                logger.error(`ACW02 polling: hvacThermostat read failed: ${error.message}`);
             }
             
             // Poll error text from locationDescription
             try {
-                await endpoint1.read('genBasic', ['locationDesc']);
+                logger.debug(`ACW02 polling: Reading genBasic locationDesc...`);
+                const basicData = await endpoint1.read('genBasic', ['locationDesc']);
+                logger.info(`ACW02 polling: genBasic read successful: ${JSON.stringify(basicData)}`);
             } catch (error) {
-                if (options?.debug) logger.debug(`Polling error: ${error}`);
+                logger.error(`ACW02 polling: genBasic read failed: ${error.message}`);
             }
             
             // Poll fan mode (unreportable attribute)
             try {
-                await endpoint1.read('hvacFanCtrl', ['fanMode']);
+                logger.debug(`ACW02 polling: Reading hvacFanCtrl fanMode...`);
+                const fanData = await endpoint1.read('hvacFanCtrl', ['fanMode']);
+                logger.info(`ACW02 polling: hvacFanCtrl read successful: ${JSON.stringify(fanData)}`);
             } catch (error) {
-                if (options?.debug) logger.debug(`Polling error: ${error}`);
+                logger.error(`ACW02 polling: hvacFanCtrl read failed: ${error.message}`);
             }
+            
+            logger.info(`ACW02 POLLING COMPLETED for ${device.ieeeAddr}`);
+        } else if (type === 'start') {
+            logger.info(`ACW02 device started/paired: ${device.ieeeAddr}`);
+        } else if (type === 'stop') {
+            logger.info(`ACW02 device stopped/removed: ${device.ieeeAddr}`);
+        } else {
+            logger.debug(`ACW02 onEvent: Unhandled event type '${type}'`);
         }
     },
 
