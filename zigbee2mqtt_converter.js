@@ -17,26 +17,6 @@ const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
 const e = exposes.presets;
-const pollTimers = {};
-
-const setupPolling = (device, intervalSeconds, readFn) => {
-    const key = `poll_${device.ieeeAddr}`;
-    if (pollTimers[key]) clearInterval(pollTimers[key]);
-
-    if (intervalSeconds > 0) {
-        pollTimers[key] = setInterval(() => {
-            readFn(device).catch(() => {});
-        }, intervalSeconds * 1000);
-    }
-};
-
-const teardownPolling = (device) => {
-    const key = `poll_${device.ieeeAddr}`;
-    if (pollTimers[key]) {
-        clearInterval(pollTimers[key]);
-        delete pollTimers[key];
-    }
-};
 
 // Custom converters for named switches and custom fan modes
 const tzLocal = {
@@ -150,36 +130,8 @@ const definition = {
     vendor: 'ESPRESSIF',
     description: 'ACW02 HVAC Thermostat Controller via Zigbee',
     
-    // Enable meta.device.poll() for unreportable attributes
     meta: {
         multiEndpoint: true,
-        poll: {
-            // Poll interval in seconds (default 30, overridable via device options)
-            interval: (device) => device.options?.state_poll_interval ?? 30,
-            read: async (device) => {
-                const endpoint1 = device.getEndpoint(1);
-                if (!endpoint1) return;
-                
-                // Read unreportable thermostat attributes
-                try {
-                    await endpoint1.read('hvacThermostat', [
-                        'runningMode',
-                        'systemMode',
-                        'occupiedHeatingSetpoint',
-                        'occupiedCoolingSetpoint',
-                    ]);
-                } catch (error) {
-                    // Silently ignore read errors (device may be offline or busy)
-                }
-                
-                // Read error text from locationDescription
-                try {
-                    await endpoint1.read('genBasic', ['locationDesc']);
-                } catch (error) {
-                    // Silently ignore read errors
-                }
-            },
-        },
     },
     
     // Supported features
@@ -300,41 +252,45 @@ const definition = {
     },
     
     onEvent: async (type, data, device, options) => {
-        const endpoint1 = device.getEndpoint(1);
-        if (!endpoint1) return;
+        // Z2M's generic polling framework triggers 'interval' events
+        // when exposes.options.measurement_poll_interval() is defined
+        if (type === 'interval') {
+            const endpoint1 = device.getEndpoint(1);
+            if (!endpoint1) return;
+            
+            if (options?.debug) logger.debug(`Start polling`);
 
-        const pollInterval = options?.state_poll_interval ?? 30;
-
-        const pollFn = async (dev) => {
+            // Poll unreportable thermostat attributes
             try {
-                await dev.getEndpoint(1).read('hvacThermostat', [
-                    'runningMode', 'systemMode',
-                    'occupiedHeatingSetpoint', 'occupiedCoolingSetpoint',
+                await endpoint1.read('hvacThermostat', [
+                    'runningMode',
+                    'systemMode',
+                    'occupiedHeatingSetpoint',
+                    'occupiedCoolingSetpoint',
                 ]);
-            } catch (_) {}
+            } catch (error) {
+                if (options?.debug) logger.debug(`Polling error: ${error}`);
+            }
+            
+            // Poll error text from locationDescription
             try {
-                await dev.getEndpoint(1).read('genBasic', ['locationDesc']);
-            } catch (_) {}
-        };
-
-        if (type === 'stop') {
-            teardownPolling(device);
-        } else {
-            setupPolling(device, pollInterval, pollFn);
-            if (['deviceAnnounce', 'message'].includes(type)) {
-                await pollFn(device); // Immediate refresh
+                await endpoint1.read('genBasic', ['locationDesc']);
+            } catch (error) {
+                if (options?.debug) logger.debug(`Polling error: ${error}`);
+            }
+            
+            // Poll fan mode (unreportable attribute)
+            try {
+                await endpoint1.read('hvacFanCtrl', ['fanMode']);
+            } catch (error) {
+                if (options?.debug) logger.debug(`Polling error: ${error}`);
             }
         }
     },
 
     // Options for configurable polling interval
     options: [
-        {
-            name: 'state_poll_interval',
-            type: 'number',
-            description: 'Interval (in seconds) to poll unreportable attributes (runningMode, error_text). Default: 30 seconds. Set to 0 to disable polling.',
-            default: 30,
-        },
+        exposes.options.measurement_poll_interval(),
     ],
 };
 
