@@ -9,3 +9,9 @@ This repository uses multiple licenses depending on content type:
 
 Code (*.yaml, *.cpp, *.h) — GNU GPLv3
 PCB files (*.zip, *.json) — CC BY-NC-SA 4.0
+
+
+🙌 Credits
+Original HVAC reverse‑engineering and ESPHome work: acw02_esphome
+
+Zigbee2MQTT ecosystem: Koenkk/zigbee2mqtt and zigbee-herdsman-converters
