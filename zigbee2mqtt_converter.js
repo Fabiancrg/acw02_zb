@@ -194,7 +194,7 @@ const definition = {
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
-        e.binary().withEndpoint('clean_status').withValueToggle('ON', 'OFF').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
+        exposes.binary('clean_status', exposes.access.STATE_GET, 'ON', 'OFF').withEndpoint('clean_status').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
