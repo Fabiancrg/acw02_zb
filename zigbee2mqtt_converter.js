@@ -17,6 +17,26 @@ const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
 const e = exposes.presets;
+const pollTimers = {};
+
+const setupPolling = (device, intervalSeconds, readFn) => {
+    const key = `poll_${device.ieeeAddr}`;
+    if (pollTimers[key]) clearInterval(pollTimers[key]);
+
+    if (intervalSeconds > 0) {
+        pollTimers[key] = setInterval(() => {
+            readFn(device).catch(() => {});
+        }, intervalSeconds * 1000);
+    }
+};
+
+const teardownPolling = (device) => {
+    const key = `poll_${device.ieeeAddr}`;
+    if (pollTimers[key]) {
+        clearInterval(pollTimers[key]);
+        delete pollTimers[key];
+    }
+};
 
 // Custom converters for named switches and custom fan modes
 const tzLocal = {
@@ -43,96 +63,6 @@ const tzLocal = {
             await entity.read('hvacFanCtrl', ['fanMode']);
         },
     },
-    eco_mode: {
-        key: ['eco_mode'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write (on/off are commands, not attributes)
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {eco_mode: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
-    swing_mode: {
-        key: ['swing_mode'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {swing_mode: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
-    display: {
-        key: ['display'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {display: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
-    night_mode: {
-        key: ['night_mode'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {night_mode: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
-    purifier: {
-        key: ['purifier'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {purifier: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
-    mute: {
-        key: ['mute'],
-        convertSet: async (entity, key, value, meta) => {
-            // Use command instead of write
-            if (value === 'ON') {
-                await entity.command('genOnOff', 'on', {}, {disableDefaultResponse: true});
-            } else {
-                await entity.command('genOnOff', 'off', {}, {disableDefaultResponse: true});
-            }
-            return {state: {mute: value}};
-        },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('genOnOff', ['onOff']);
-        },
-    },
 };
 
 const fzLocal = {
@@ -156,69 +86,7 @@ const fzLocal = {
             }
         },
     },
-    eco_mode: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 2) {
-                return {eco_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    swing_mode: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 3) {
-                return {swing_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    display: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 4) {
-                return {display: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    night_mode: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 5) {
-                return {night_mode: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    purifier: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 6) {
-                return {purifier: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    clean_status: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 7) {
-                return {clean_status: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
-    mute: {
-        cluster: 'genOnOff',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.endpoint.ID === 8) {
-                return {mute: msg.data.onOff === 1 ? 'ON' : 'OFF'};
-            }
-        },
-    },
+
     error_text: {
         cluster: 'genBasic',
         type: ['attributeReport', 'readResponse'],
@@ -318,13 +186,7 @@ const definition = {
     fromZigbee: [
         fzLocal.thermostat_ep1,  // Custom thermostat converter with _ep1 suffix
         fzLocal.fan_mode,
-        fzLocal.eco_mode,
-        fzLocal.swing_mode,
-        fzLocal.display,
-        fzLocal.night_mode,
-        fzLocal.purifier,
-        fzLocal.clean_status,
-        fzLocal.mute,
+        fz.on_off,               // Standard on/off for all switch endpoints (eco, swing, display, night, purifier, mute, clean)
         fzLocal.error_text,
     ],
     toZigbee: [
@@ -333,13 +195,8 @@ const definition = {
         tz.thermostat_occupied_cooling_setpoint,
         tz.thermostat_system_mode,
         tzLocal.fan_mode,
-        tzLocal.eco_mode,
-        tzLocal.swing_mode,
-        tzLocal.display,
-        tzLocal.night_mode,
-        tzLocal.purifier,
-        tzLocal.mute,
-        // Note: clean_status is read-only (from AC), so no toZigbee converter needed
+        tz.on_off,              // Standard on/off for all switch endpoints
+        // Note: clean_status is read-only (from AC), so only fz converter needed
     ],
     
     // Expose controls in the UI
@@ -459,6 +316,34 @@ const definition = {
         }
     },
     
+    onEvent: async (type, data, device, options) => {
+        const endpoint1 = device.getEndpoint(1);
+        if (!endpoint1) return;
+
+        const pollInterval = options?.state_poll_interval ?? 30;
+
+        const pollFn = async (dev) => {
+            try {
+                await dev.getEndpoint(1).read('hvacThermostat', [
+                    'runningMode', 'systemMode',
+                    'occupiedHeatingSetpoint', 'occupiedCoolingSetpoint',
+                ]);
+            } catch (_) {}
+            try {
+                await dev.getEndpoint(1).read('genBasic', ['locationDesc']);
+            } catch (_) {}
+        };
+
+        if (type === 'stop') {
+            teardownPolling(device);
+        } else {
+            setupPolling(device, pollInterval, pollFn);
+            if (['deviceAnnounce', 'message'].includes(type)) {
+                await pollFn(device); // Immediate refresh
+            }
+        }
+    },
+
     // Options for configurable polling interval
     options: [
         {
