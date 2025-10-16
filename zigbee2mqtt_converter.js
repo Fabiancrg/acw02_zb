@@ -16,7 +16,9 @@ const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
 const tz = require('zigbee-herdsman-converters/converters/toZigbee');
 const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const reporting = require('zigbee-herdsman-converters/lib/reporting');
+const m = require('zigbee-herdsman-converters/lib/modernExtend');
 const e = exposes.presets;
+const ea = exposes.access;
 
 // Custom converters for named switches and custom fan modes
 const tzLocal = {
@@ -309,65 +311,61 @@ const definition = {
         }
     },
     
-    onEvent: async (type, data, device, options, logger) => {
-        // Log ALL events to debug the polling framework
-        logger.info(`ACW02 onEvent: type='${type}', device='${device.ieeeAddr}'`);
-        
-        // Z2M's generic polling framework triggers 'interval' events
-        // when exposes.options.measurement_poll_interval() is defined
-        if (type === 'interval') {
-            logger.info(`ACW02 POLLING TRIGGERED for ${device.ieeeAddr}`);
-            
-            const endpoint1 = device.getEndpoint(1);
-            if (!endpoint1) {
-                logger.warn(`ACW02 polling: endpoint 1 not found`);
-                return;
-            }
-            
-            // Poll unreportable thermostat attributes
-            try {
-                logger.debug(`ACW02 polling: Reading hvacThermostat attributes...`);
-                const thermostatData = await endpoint1.read('hvacThermostat', [
-                    'runningMode',
-                    'systemMode',
-                    'occupiedHeatingSetpoint',
-                ]);
-                logger.info(`ACW02 polling: hvacThermostat read successful: ${JSON.stringify(thermostatData)}`);
-            } catch (error) {
-                logger.error(`ACW02 polling: hvacThermostat read failed: ${error.message}`);
-            }
-            
-            // Poll error text from locationDescription
-            try {
-                logger.debug(`ACW02 polling: Reading genBasic locationDesc...`);
-                const basicData = await endpoint1.read('genBasic', ['locationDesc']);
-                logger.info(`ACW02 polling: genBasic read successful: ${JSON.stringify(basicData)}`);
-            } catch (error) {
-                logger.error(`ACW02 polling: genBasic read failed: ${error.message}`);
-            }
-            
-            // Poll fan mode (unreportable attribute)
-            try {
-                logger.debug(`ACW02 polling: Reading hvacFanCtrl fanMode...`);
-                const fanData = await endpoint1.read('hvacFanCtrl', ['fanMode']);
-                logger.info(`ACW02 polling: hvacFanCtrl read successful: ${JSON.stringify(fanData)}`);
-            } catch (error) {
-                logger.error(`ACW02 polling: hvacFanCtrl read failed: ${error.message}`);
-            }
-            
-            logger.info(`ACW02 POLLING COMPLETED for ${device.ieeeAddr}`);
-        } else if (type === 'start') {
-            logger.info(`ACW02 device started/paired: ${device.ieeeAddr}`);
-        } else if (type === 'stop') {
-            logger.info(`ACW02 device stopped/removed: ${device.ieeeAddr}`);
-        } else {
-            logger.debug(`ACW02 onEvent: Unhandled event type '${type}'`);
-        }
-    },
-
-    // Options for configurable polling interval
-    options: [
-        exposes.options.measurement_poll_interval(),
+    // Use modern polling extend instead of onEvent
+    extend: [
+        m.poll({
+            key: "acw02_state",
+            option: e
+                .numeric("acw02_poll_interval", ea.SET)
+                .withValueMin(-1)
+                .withDescription(
+                    "ACW02 HVAC does not support reporting for some attributes (runningMode, systemMode, fanMode, errorText) so they are polled instead. Default is 60 seconds, set to -1 to disable."
+                ),
+            defaultIntervalSeconds: 60,
+            poll: async (device) => {
+                // Use console.log since logger is not available in modern extend poll context
+                console.log(`ACW02 POLLING TRIGGERED for ${device.ieeeAddr}`);
+                
+                const endpoint1 = device.getEndpoint(1);
+                if (!endpoint1) {
+                    console.warn(`ACW02 polling: endpoint 1 not found`);
+                    return;
+                }
+                
+                // Poll unreportable thermostat attributes
+                try {
+                    console.log(`ACW02 polling: Reading hvacThermostat attributes...`);
+                    await endpoint1.read('hvacThermostat', [
+                        'runningMode',
+                        'systemMode',
+                        'occupiedHeatingSetpoint',
+                    ]);
+                    console.log(`ACW02 polling: hvacThermostat read successful`);
+                } catch (error) {
+                    console.error(`ACW02 polling: hvacThermostat read failed: ${error.message}`);
+                }
+                
+                // Poll error text from locationDescription
+                try {
+                    console.log(`ACW02 polling: Reading genBasic locationDesc...`);
+                    await endpoint1.read('genBasic', ['locationDesc']);
+                    console.log(`ACW02 polling: genBasic read successful`);
+                } catch (error) {
+                    console.error(`ACW02 polling: genBasic read failed: ${error.message}`);
+                }
+                
+                // Poll fan mode (unreportable attribute)
+                try {
+                    console.log(`ACW02 polling: Reading hvacFanCtrl fanMode...`);
+                    await endpoint1.read('hvacFanCtrl', ['fanMode']);
+                    console.log(`ACW02 polling: hvacFanCtrl read successful`);
+                } catch (error) {
+                    console.error(`ACW02 polling: hvacFanCtrl read failed: ${error.message}`);
+                }
+                
+                console.log(`ACW02 POLLING COMPLETED for ${device.ieeeAddr}`);
+            },
+        }),
     ],
 };
 
