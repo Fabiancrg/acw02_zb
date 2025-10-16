@@ -148,7 +148,7 @@ static hvac_state_t current_state = {
     .fan_speed = HVAC_FAN_AUTO,
     .filter_dirty = false,
     .error = false,
-    .error_text = "No Error"
+    .error_text = ""  // Empty string when no error
 };
 
 /* UART buffer */
@@ -380,11 +380,18 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         uint8_t fault = frame[12];
         
         if (fault != 0x00) {
-            const char *error_desc = hvac_decode_error_code(fault);
-            ESP_LOGE(TAG, "AC FAULT: code=0x%02X - %s", fault, error_desc);
+            // We only know that 0x04 = PC (Fashion Conflict)
+            // All other fault codes are unknown
             current_state.error = true;
-            snprintf(current_state.error_text, sizeof(current_state.error_text), 
-                     "FAULT 0x%02X: %s", fault, error_desc);
+            if (fault == 0x04) {
+                ESP_LOGE(TAG, "AC FAULT: code=0x%02X - PC: Fashion Conflict", fault);
+                snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                         "FAULT 0x%02X: PC - Fashion Conflict", fault);
+            } else {
+                ESP_LOGE(TAG, "AC FAULT: code=0x%02X - Unknown error", fault);
+                snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                         "Error, check error code on the display");
+            }
         } else if (warn != 0x00) {
             const char *warn_desc = hvac_decode_error_code(warn);
             ESP_LOGW(TAG, "AC WARNING: code=0x%02X - %s", warn, warn_desc);
@@ -396,7 +403,7 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         } else {
             current_state.filter_dirty = false;
             current_state.error = false;
-            strncpy(current_state.error_text, "No Error", sizeof(current_state.error_text));
+            current_state.error_text[0] = '\0';  // Empty string when no error
         }
         return;
     }

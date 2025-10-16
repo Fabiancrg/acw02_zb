@@ -82,6 +82,19 @@ const fzLocal = {
         },
     },
 
+    // Read-only binary sensor for error status (endpoint 9)
+    error_status: {
+        cluster: 'genOnOff',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 9 && msg.data.hasOwnProperty('onOff')) {
+                const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
+                meta.logger.info(`ACW02 fz.error_status: Error status: ${state}`);
+                return {error_status: state};
+            }
+        },
+    },
+
     error_text: {
         cluster: 'genBasic',
         type: ['attributeReport', 'readResponse'],
@@ -96,7 +109,20 @@ const fzLocal = {
                     const textData = errorTextBytes.slice(1, 1 + textLength);
                     const errorText = String.fromCharCode.apply(null, textData);
                     meta.logger.info(`ACW02 fz.error_text: Decoded error text: "${errorText}"`);
-                    return {error_text: errorText || ''};  // Empty string when no error
+                    
+                    // Check if there's an error (non-empty text)
+                    if (errorText && errorText.trim() !== '') {
+                        // Check if it's a known error code (0x04 = PC fashion conflict)
+                        if (errorText.includes('0x04') || errorText.includes('PC')) {
+                            return {error_text: errorText};
+                        } else {
+                            // Unknown error - show generic message
+                            return {error_text: 'Error, check error code on the display'};
+                        }
+                    } else {
+                        // No error
+                        return {error_text: ''};
+                    }
                 }
             }
         },
@@ -153,7 +179,7 @@ const definition = {
     zigbeeModel: ['acw02-z'],
     model: 'ACW02-ZB',
     vendor: 'ESPRESSIF',
-    description: 'ACW02 HVAC Thermostat Controller via Zigbee',
+    description: 'ACW02 HVAC Thermostat Controller via Zigbee (Router)',
     
     meta: {
         multiEndpoint: true,
@@ -164,6 +190,7 @@ const definition = {
         fzLocal.thermostat,   // Custom thermostat converter
         fzLocal.fan_mode,
         fzLocal.clean_status, // Read-only binary sensor for endpoint 7
+        fzLocal.error_status, // Read-only binary sensor for endpoint 9
         fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8)
         fzLocal.error_text,
     ],
@@ -186,7 +213,8 @@ const definition = {
         exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO'),
         exposes.text('error_text', exposes.access.STATE_GET)
-            .withDescription('Error message text from AC (empty when no error, read-only)'),
+            .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
+        exposes.binary('error_status', exposes.access.STATE_GET, 'ON', 'OFF').withEndpoint('error_status').withDescription('Error status indicator (read-only, ON when AC has an error)'),
         e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
         e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
         e.switch().withEndpoint('display').withDescription('Display on/off'),
@@ -207,6 +235,7 @@ const definition = {
             'purifier': 6,     // Purifier switch
             'clean_status': 7, // Clean status binary sensor
             'mute': 8,         // Mute switch
+            'error_status': 9, // Error status binary sensor
         };
     },
     
@@ -220,6 +249,7 @@ const definition = {
         const endpoint6 = device.getEndpoint(6);
         const endpoint7 = device.getEndpoint(7);
         const endpoint8 = device.getEndpoint(8);
+        const endpoint9 = device.getEndpoint(9);
         
         // Bind clusters for main thermostat (endpoint 1)
         await reporting.bind(endpoint1, coordinatorEndpoint, [
@@ -265,6 +295,10 @@ const definition = {
         // Bind and configure endpoint 8 (Mute)
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint8);
+        
+        // Bind and configure endpoint 9 (Error status - read-only)
+        await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint9);
         
         // Initial read of unreportable attributes
         try {

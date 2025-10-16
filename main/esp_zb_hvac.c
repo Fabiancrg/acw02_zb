@@ -19,8 +19,8 @@
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
 
-#if !defined ZB_ED_ROLE
-#error Define ZB_ED_ROLE in idf.py menuconfig to compile End Device source code.
+#if !defined ZB_ROUTER_ROLE
+#error Define ZB_ROUTER_ROLE in idf.py menuconfig to compile Router source code.
 #endif
 
 static const char *TAG = "HVAC_ZIGBEE";
@@ -318,6 +318,14 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             ESP_LOGI(TAG, "[JOIN] IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                      ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
                      ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
+            
+#ifdef ZB_ROUTER_ROLE
+            ESP_LOGI(TAG, "[JOIN] Device Type: ROUTER (can route messages for other devices)");
+#elif defined(ZB_ED_ROLE)
+            ESP_LOGI(TAG, "[JOIN] Device Type: END DEVICE");
+#else
+            ESP_LOGI(TAG, "[JOIN] Device Type: UNKNOWN");
+#endif
             
             ESP_LOGI(TAG, "[JOIN] Device is now online and ready");
             ESP_LOGI(TAG, "[JOIN] Scheduling periodic HVAC updates...");
@@ -650,6 +658,14 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID,
                                  error_text_zigbee, false);
     
+    /* Update Error Status binary sensor - Endpoint 9 */
+    // Error status is ON when there's an error (non-empty error text)
+    bool error_status_on = (text_len > 0);
+    esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &error_status_on, false);
+    
     /* Log error text when error/warning is active */
     bool error_active = state.error || state.filter_dirty;
     if (error_active) {
@@ -695,9 +711,17 @@ static void esp_zb_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "[START] Starting Zigbee task...");
     
-    /* Initialize Zigbee stack */
-    ESP_LOGI(TAG, "[INIT] Initializing Zigbee stack as End Device...");
-    esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
+    /* Initialize Zigbee stack as Router */
+    ESP_LOGI(TAG, "[INIT] Initializing Zigbee stack as Router...");
+    esp_zb_cfg_t zb_nwk_cfg = {
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER,
+        .install_code_policy = INSTALLCODE_POLICY_ENABLE,
+        .nwk_cfg = {
+            .zczr_cfg = {
+                .max_children = 10,
+            },
+        },
+    };
     esp_zb_init(&zb_nwk_cfg);
     ESP_LOGI(TAG, "[OK] Zigbee stack initialized");
     
@@ -936,6 +960,27 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_mute_clusters, mute_endpoint_config);
     ESP_LOGI(TAG, "[OK] Mute switch endpoint %d added", HA_ESP_MUTE_ENDPOINT);
     
+    /* Create Error Status Binary Sensor - Endpoint 9 */
+    ESP_LOGI(TAG, "[ERROR] Creating Error status binary sensor endpoint %d...", HA_ESP_ERROR_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_error_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_error_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_error_clusters, esp_zb_error_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_on_off_cluster_cfg_t error_on_off_cfg = {
+        .on_off = false,  // Error status defaults to false (no error)
+    };
+    esp_zb_attribute_list_t *esp_zb_error_on_off_cluster = esp_zb_on_off_cluster_create(&error_on_off_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_error_clusters, esp_zb_error_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t error_endpoint_config = {
+        .endpoint = HA_ESP_ERROR_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,  // Binary sensor as on/off device
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_error_clusters, error_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Error status binary sensor endpoint %d added", HA_ESP_ERROR_ENDPOINT);
+    
     /* Add manufacturer info */
     ESP_LOGI(TAG, "[INFO] Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
     zcl_basic_manufacturer_info_t info = {
@@ -950,6 +995,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_PURIFIER_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_CLEAN_ENDPOINT, &info);
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_MUTE_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ERROR_ENDPOINT, &info);
     ESP_LOGI(TAG, "[OK] Manufacturer info added to all endpoints");
     
     /* Register device */
