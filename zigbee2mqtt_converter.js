@@ -133,11 +133,11 @@ const fzLocal = {
                 result.system_mode = sysModeMap[msg.data.systemMode] || 'off';
                 meta.logger.info(`ACW02 fz.thermostat: systemMode=0x${msg.data.systemMode.toString(16)} -> ${result.system_mode}`);
             }
+            // Map setpoint to occupied_heating_setpoint (used for both heating and cooling)
             if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
                 result.occupied_heating_setpoint = msg.data.occupiedHeatingSetpoint / 100;
-            }
-            if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
-                result.occupied_cooling_setpoint = msg.data.occupiedCoolingSetpoint / 100;
+            } else if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
+                result.occupied_heating_setpoint = msg.data.occupiedCoolingSetpoint / 100;
             }
             
             if (Object.keys(result).length > 0) {
@@ -169,8 +169,7 @@ const definition = {
     ],
     toZigbee: [
         tz.thermostat_local_temperature,
-        tz.thermostat_occupied_heating_setpoint,
-        tz.thermostat_occupied_cooling_setpoint,
+        tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
         tzLocal.fan_mode,
         tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7
@@ -181,7 +180,6 @@ const definition = {
     exposes: [
         e.climate()
             .withSetpoint('occupied_heating_setpoint', 16, 31, 1)
-            .withSetpoint('occupied_cooling_setpoint', 16, 31, 1)
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
             .withRunningState(['idle', 'heat', 'cool', 'fan_only']),
@@ -299,7 +297,6 @@ const definition = {
                     'runningMode',
                     'systemMode',
                     'occupiedHeatingSetpoint',
-                    'occupiedCoolingSetpoint',
                 ]);
                 logger.info(`ACW02 polling: hvacThermostat read successful: ${JSON.stringify(thermostatData)}`);
             } catch (error) {
