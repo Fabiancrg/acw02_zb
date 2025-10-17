@@ -79,7 +79,7 @@ const fzLocal = {
             if (msg.endpoint.ID === 7 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
                 meta.logger.info(`ACW02 fz.clean_status: Filter cleaning status: ${state}`);
-                return {clean_status: state};
+                return {filter_clean_status: state};
             }
         },
     },
@@ -92,7 +92,7 @@ const fzLocal = {
             if (msg.endpoint.ID === 9 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
                 meta.logger.info(`ACW02 fz.error_status: Error status: ${state}`);
-                return {error_status: state};
+                return {ac_error_status: state};
             }
         },
     },
@@ -104,27 +104,28 @@ const fzLocal = {
             if (msg.endpoint.ID === 1 && msg.data['locationDesc'] !== undefined) {
                 meta.logger.debug(`ACW02 fz.error_text: Raw locationDesc data type: ${typeof msg.data['locationDesc']}, value: ${JSON.stringify(msg.data['locationDesc'])}`);
                 
-                // Zigbee string: first byte is length, rest is text
-                const errorTextBytes = msg.data['locationDesc'];
-                if (errorTextBytes && errorTextBytes.length > 0) {
-                    const textLength = errorTextBytes[0];
-                    const textData = errorTextBytes.slice(1, 1 + textLength);
-                    const errorText = String.fromCharCode.apply(null, textData);
-                    meta.logger.info(`ACW02 fz.error_text: Decoded error text: "${errorText}"`);
-                    
-                    // Check if there's an error (non-empty text)
-                    if (errorText && errorText.trim() !== '') {
-                        // Check if it's a known error code (0x04 = PC fashion conflict)
-                        if (errorText.includes('0x04') || errorText.includes('PC')) {
-                            return {error_text: errorText};
-                        } else {
-                            // Unknown error - show generic message
-                            return {error_text: 'Error, check error code on the display'};
-                        }
-                    } else {
-                        // No error
-                        return {error_text: ''};
-                    }
+                let errorText = '';
+                const locationDesc = msg.data['locationDesc'];
+                
+                if (typeof locationDesc === 'string') {
+                    // ESP32 is sending string directly
+                    errorText = locationDesc;
+                    meta.logger.info(`ACW02 fz.error_text: Received string directly: "${errorText}"`);
+                } else if (locationDesc && Array.isArray(locationDesc) && locationDesc.length > 0) {
+                    // Zigbee string format: first byte is length, rest is text
+                    const textLength = locationDesc[0];
+                    const textData = locationDesc.slice(1, 1 + textLength);
+                    errorText = String.fromCharCode.apply(null, textData);
+                    meta.logger.info(`ACW02 fz.error_text: Decoded from bytes: "${errorText}"`);
+                }
+                
+                // Check if there's an error (non-empty text)
+                if (errorText && errorText.trim() !== '') {
+                    // Return the actual error text
+                    return {error_text: errorText};
+                } else {
+                    // No error
+                    return {error_text: ''};
                 }
             }
         },
@@ -216,28 +217,28 @@ const definition = {
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO'),
         exposes.text('error_text', exposes.access.STATE_GET)
             .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
-        exposes.binary('error_status', exposes.access.STATE_GET, 'ON', 'OFF').withEndpoint('error_status').withDescription('Error status indicator (read-only, ON when AC has an error)'),
+        exposes.binary('ac_error_status', exposes.access.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
         e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
         e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
-        exposes.binary('clean_status', exposes.access.STATE_GET, 'ON', 'OFF').withEndpoint('clean_status').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
+        exposes.binary('filter_clean_status', exposes.access.STATE_GET, 'ON', 'OFF').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
     // Map endpoints with descriptive names
     endpoint: (device) => {
         return {
-            'default': 1,      // Main thermostat
-            'eco_mode': 2,     // Eco mode switch
-            'swing_mode': 3,   // Swing switch
-            'display': 4,      // Display switch
-            'night_mode': 5,   // Night mode switch
-            'purifier': 6,     // Purifier switch
-            'clean_status': 7, // Clean status binary sensor
-            'mute': 8,         // Mute switch
-            'error_status': 9, // Error status binary sensor
+            'default': 1,          // Main thermostat
+            'eco_mode': 2,         // Eco mode switch
+            'swing_mode': 3,       // Swing switch
+            'display': 4,          // Display switch
+            'night_mode': 5,       // Night mode switch
+            'purifier': 6,         // Purifier switch
+            'clean_sensor': 7,     // Clean status binary sensor (read-only)
+            'mute': 8,             // Mute switch
+            'error_sensor': 9,     // Error status binary sensor (read-only)
         };
     },
     
@@ -361,6 +362,30 @@ const definition = {
                     console.log(`ACW02 polling: hvacFanCtrl read successful`);
                 } catch (error) {
                     console.error(`ACW02 polling: hvacFanCtrl read failed: ${error.message}`);
+                }
+                
+                // Poll clean status (endpoint 7)
+                try {
+                    console.log(`ACW02 polling: Reading clean status...`);
+                    const endpoint7 = device.getEndpoint(7);
+                    if (endpoint7) {
+                        await endpoint7.read('genOnOff', ['onOff']);
+                        console.log(`ACW02 polling: clean status read successful`);
+                    }
+                } catch (error) {
+                    console.error(`ACW02 polling: clean status read failed: ${error.message}`);
+                }
+                
+                // Poll error status (endpoint 9)
+                try {
+                    console.log(`ACW02 polling: Reading error status...`);
+                    const endpoint9 = device.getEndpoint(9);
+                    if (endpoint9) {
+                        await endpoint9.read('genOnOff', ['onOff']);
+                        console.log(`ACW02 polling: error status read successful`);
+                    }
+                } catch (error) {
+                    console.error(`ACW02 polling: error status read failed: ${error.message}`);
                 }
                 
                 console.log(`ACW02 POLLING COMPLETED for ${device.ieeeAddr}`);

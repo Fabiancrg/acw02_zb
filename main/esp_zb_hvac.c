@@ -648,11 +648,15 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     
     /* Update error text in Basic cluster locationDescription attribute - Endpoint 1 */
     // Zigbee string format: first byte is length, followed by chars
-    char error_text_zigbee[65];  // Max 64 chars + 1 length byte
+    static char error_text_zigbee[65];  // Static to prevent stack corruption
+    memset(error_text_zigbee, 0, sizeof(error_text_zigbee));  // Clear buffer
+    
     size_t text_len = strlen(state.error_text);
     if (text_len > 64) text_len = 64;
     error_text_zigbee[0] = text_len;  // Length byte
-    memcpy(&error_text_zigbee[1], state.error_text, text_len);
+    if (text_len > 0) {
+        memcpy(&error_text_zigbee[1], state.error_text, text_len);
+    }
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID,
@@ -755,7 +759,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_build_id);
     
     /* Add locationDescription for error text (standard Basic cluster attribute 0x0010) */
-    char location_desc[] = "\x00";  // Empty initially (length = 0)
+    static char location_desc[65] = "\x00";  // Static buffer, empty initially (length = 0)
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID, location_desc);
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_hvac_clusters, esp_zb_basic_cluster, 
@@ -983,19 +987,62 @@ static void esp_zb_task(void *pvParameters)
     
     /* Add manufacturer info */
     ESP_LOGI(TAG, "[INFO] Adding manufacturer info (Espressif, %s)...", CONFIG_IDF_TARGET);
-    zcl_basic_manufacturer_info_t info = {
+    
+    // Create separate manufacturer info structs for each endpoint to avoid memory corruption
+    zcl_basic_manufacturer_info_t info_hvac = {
         .manufacturer_name = ESP_MANUFACTURER_NAME,
         .model_identifier = ESP_MODEL_IDENTIFIER,
     };
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_HVAC_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ECO_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_DISPLAY_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_NIGHT_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_PURIFIER_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_CLEAN_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_MUTE_ENDPOINT, &info);
-    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ERROR_ENDPOINT, &info);
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_HVAC_ENDPOINT, &info_hvac);
+    
+    zcl_basic_manufacturer_info_t info_eco = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ECO_ENDPOINT, &info_eco);
+    
+    zcl_basic_manufacturer_info_t info_swing = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info_swing);
+    
+    zcl_basic_manufacturer_info_t info_display = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_DISPLAY_ENDPOINT, &info_display);
+    
+    zcl_basic_manufacturer_info_t info_night = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_NIGHT_ENDPOINT, &info_night);
+    
+    zcl_basic_manufacturer_info_t info_purifier = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_PURIFIER_ENDPOINT, &info_purifier);
+    
+    zcl_basic_manufacturer_info_t info_clean = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_CLEAN_ENDPOINT, &info_clean);
+    
+    zcl_basic_manufacturer_info_t info_mute = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_MUTE_ENDPOINT, &info_mute);
+    
+    zcl_basic_manufacturer_info_t info_error = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_ERROR_ENDPOINT, &info_error);
+    
     ESP_LOGI(TAG, "[OK] Manufacturer info added to all endpoints");
     
     /* Register device */
