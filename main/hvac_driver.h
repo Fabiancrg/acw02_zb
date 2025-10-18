@@ -70,7 +70,7 @@ typedef struct {
 
 /* UART Configuration */
 #define HVAC_UART_NUM           UART_NUM_1
-#define HVAC_UART_TX_PIN        21   // GPIO21 (D10 on XIAO ESP32-C6)
+#define HVAC_UART_TX_PIN        18   // GPIO18 (D10 on XIAO ESP32-C6)
 #define HVAC_UART_RX_PIN        20   // GPIO20 (D9 on XIAO ESP32-C6)
 #define HVAC_UART_BAUD_RATE     9600
 #define HVAC_UART_BUF_SIZE      1024
