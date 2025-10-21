@@ -43,6 +43,14 @@ See the documentation files for advanced features, troubleshooting, and hardware
 
 ---
 
+## PCB
+
+The PCB has been created and ordered with the parts, as soon as it is tested I will add more info about it.
+I am using a Seeedstudio ESP32-C6 with a custom buck converter (based on a MPS MP1584) and a level shifter for TX/RX (using a Texas Instrument TXB0102)
+![ACW02-ZB Render](./PCB/acw02_zb.jpg)
+
+---
+
 ## 🙌 Credits
 
 - Original HVAC reverse‑engineering and ESPHome work: [devildant/acw02_esphome](https://github.com/devildant/acw02_esphome)  
