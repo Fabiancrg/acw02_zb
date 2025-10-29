@@ -20,7 +20,7 @@ static esp_zb_zcl_ota_upgrade_status_t ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRA
 
 /* OTA partition handle */
 static const esp_partition_t *update_partition = NULL;
-static esp_ota_handle_t update_handle = 0;
+// static esp_ota_handle_t update_handle = 0;
 
 /**
  * @brief Initialize OTA functionality
@@ -47,110 +47,110 @@ esp_err_t esp_zb_ota_init(void)
 /**
  * @brief OTA upgrade callback handler for client device
  */
-static esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t message)
-{
-    esp_err_t ret = ESP_OK;
+// static esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t message)
+// {
+//     esp_err_t ret = ESP_OK;
     
-    switch (message.upgrade_status) {
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
-            ESP_LOGI(TAG, "OTA upgrade started");
-            ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START;
+//     switch (message.upgrade_status) {
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
+//             ESP_LOGI(TAG, "OTA upgrade started");
+//             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START;
             
-            // Begin OTA update
-            ret = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(ret));
-                ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
-                return ret;
-            }
-            ESP_LOGI(TAG, "OTA write started");
-            break;
+//             // Begin OTA update
+//             ret = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
+//             if (ret != ESP_OK) {
+//                 ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(ret));
+//                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+//                 return ret;
+//             }
+//             ESP_LOGI(TAG, "OTA write started");
+//             break;
             
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
-            ESP_LOGD(TAG, "OTA receiving data, offset: %ld, size: %d", 
-                     message.ota_header.image_size, message.payload_size);
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
+//             ESP_LOGD(TAG, "OTA receiving data, offset: %ld, size: %d", 
+//                      message.ota_header.image_size, message.payload_size);
             
-            // Write received data to OTA partition
-            ret = esp_ota_write(update_handle, message.payload, message.payload_size);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(ret));
-                ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
-                return ret;
-            }
-            break;
+//             // Write received data to OTA partition
+//             ret = esp_ota_write(update_handle, message.payload, message.payload_size);
+//             if (ret != ESP_OK) {
+//                 ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(ret));
+//                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+//                 return ret;
+//             }
+//             break;
             
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
-            ESP_LOGI(TAG, "OTA upgrade apply");
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY:
+//             ESP_LOGI(TAG, "OTA upgrade apply");
             
-            // Finish OTA write
-            ret = esp_ota_end(update_handle);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(ret));
-                ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
-                return ret;
-            }
+//             // Finish OTA write
+//             ret = esp_ota_end(update_handle);
+//             if (ret != ESP_OK) {
+//                 ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(ret));
+//                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+//                 return ret;
+//             }
             
-            // Set boot partition
-            ret = esp_ota_set_boot_partition(update_partition);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
-                ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
-                return ret;
-            }
+//             // Set boot partition
+//             ret = esp_ota_set_boot_partition(update_partition);
+//             if (ret != ESP_OK) {
+//                 ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
+//                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+//                 return ret;
+//             }
             
-            ESP_LOGI(TAG, "OTA upgrade successful, will reboot...");
-            ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY;
-            break;
+//             ESP_LOGI(TAG, "OTA upgrade successful, will reboot...");
+//             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY;
+//             break;
             
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
-            ESP_LOGI(TAG, "OTA upgrade check");
-            // Check if new firmware is available
-            ret = ESP_OK;
-            break;
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_CHECK:
+//             ESP_LOGI(TAG, "OTA upgrade check");
+//             // Check if new firmware is available
+//             ret = ESP_OK;
+//             break;
             
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
-            ESP_LOGI(TAG, "OTA upgrade finished successfully");
-            ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH;
-            break;
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH:
+//             ESP_LOGI(TAG, "OTA upgrade finished successfully");
+//             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_FINISH;
+//             break;
             
-        case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
-            ESP_LOGE(TAG, "OTA upgrade error");
-            ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+//         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR:
+//             ESP_LOGE(TAG, "OTA upgrade error");
+//             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
             
-            // Abort OTA if it was started
-            if (update_handle) {
-                esp_ota_abort(update_handle);
-                update_handle = 0;
-            }
-            ret = ESP_FAIL;
-            break;
+//             // Abort OTA if it was started
+//             if (update_handle) {
+//                 esp_ota_abort(update_handle);
+//                 update_handle = 0;
+//             }
+//             ret = ESP_FAIL;
+//             break;
             
-        default:
-            ESP_LOGW(TAG, "Unknown OTA status: %d", message.upgrade_status);
-            break;
-    }
+//         default:
+//             ESP_LOGW(TAG, "Unknown OTA status: %d", message.upgrade_status);
+//             break;
+//     }
     
-    return ret;
-}
+//     return ret;
+// }
 
-/**
- * @brief OTA query image response handler
- */
-static esp_err_t zb_ota_query_image_resp_handler(esp_zb_zcl_ota_upgrade_query_image_resp_message_t message)
-{
-    esp_err_t ret = ESP_OK;
+// /**
+//  * @brief OTA query image response handler
+//  */
+// static esp_err_t zb_ota_query_image_resp_handler(esp_zb_zcl_ota_upgrade_query_image_resp_message_t message)
+// {
+//     esp_err_t ret = ESP_OK;
     
-    if (message.info.status == ESP_ZB_ZCL_STATUS_SUCCESS) {
-        ESP_LOGI(TAG, "OTA image available: version 0x%lx, size %ld bytes", 
-                 message.file_version, message.image_size);
-        ret = ESP_OK;  // Accept the OTA image
-    } else {
-        ESP_LOGW(TAG, "No OTA image available or query failed");
-        ret = ESP_FAIL;  // Reject the OTA image
-    }
+//     if (message.info.status == ESP_ZB_ZCL_STATUS_SUCCESS) {
+//         ESP_LOGI(TAG, "OTA image available: version 0x%lx, size %ld bytes", 
+//                  message.file_version, message.image_size);
+//         ret = ESP_OK;  // Accept the OTA image
+//     } else {
+//         ESP_LOGW(TAG, "No OTA image available or query failed");
+//         ret = ESP_FAIL;  // Reject the OTA image
+//     }
     
-    return ret;
-}
+//     return ret;
+// }
 
 /**
  * @brief Register OTA callbacks for client device
