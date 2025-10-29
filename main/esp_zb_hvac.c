@@ -18,6 +18,7 @@
 #include "ha/esp_zigbee_ha_standard.h"
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
+#include "esp_zb_ota.h"
 
 #if !defined ZB_ROUTER_ROLE
 #error Define ZB_ROUTER_ROLE in idf.py menuconfig to compile Router source code.
@@ -805,6 +806,18 @@ static void esp_zb_task(void *pvParameters)
                                                              ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_LOGI(TAG, "  [OK] Identify cluster added");
     
+    /* Add OTA cluster for firmware updates */
+    ESP_LOGI(TAG, "  [+] Adding OTA cluster (0x0019)...");
+    esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
+        .ota_upgrade_file_version = esp_zb_ota_get_fw_version(),
+        .ota_upgrade_downloaded_file_ver = 0,
+        .ota_upgrade_manufacturer = 0x1049,  // Espressif manufacturer code
+        .ota_upgrade_image_type = 0x0000,
+    };
+    ESP_ERROR_CHECK(esp_zb_ota_cluster_add_attr(esp_zb_hvac_clusters,
+                                                esp_zb_ota_cluster_create(&ota_cluster_cfg)));
+    ESP_LOGI(TAG, "  [OK] OTA cluster added (FW version: 0x%08lX)", ota_cluster_cfg.ota_upgrade_file_version);
+    
     /* Create HVAC endpoint */
     ESP_LOGI(TAG, "[EP] Creating HVAC endpoint %d (Profile: 0x%04X, Device: 0x%04X)...", 
              HA_ESP_HVAC_ENDPOINT, ESP_ZB_AF_HA_PROFILE_ID, ESP_ZB_HA_THERMOSTAT_DEVICE_ID);
@@ -1053,6 +1066,16 @@ static void esp_zb_task(void *pvParameters)
     ESP_LOGI(TAG, "[REG] Registering action handler...");
     esp_zb_core_action_handler_register(zb_action_handler);
     ESP_LOGI(TAG, "[OK] Action handler registered");
+    
+    /* Initialize and register OTA */
+    ESP_LOGI(TAG, "[OTA] Initializing OTA functionality...");
+    esp_err_t ota_ret = esp_zb_ota_init();
+    if (ota_ret == ESP_OK) {
+        esp_zb_ota_register_callbacks();
+        ESP_LOGI(TAG, "[OK] OTA initialized and ready for updates");
+    } else {
+        ESP_LOGW(TAG, "[WARN] OTA initialization failed, updates disabled");
+    }
     
     ESP_LOGI(TAG, "[CFG] Setting Zigbee channel mask: 0x%08lX", (unsigned long)ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
