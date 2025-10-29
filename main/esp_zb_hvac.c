@@ -814,8 +814,24 @@ static void esp_zb_task(void *pvParameters)
         .ota_upgrade_manufacturer = 0x1049,  // Espressif manufacturer code
         .ota_upgrade_image_type = 0x0000,
     };
-    ESP_ERROR_CHECK(esp_zb_ota_cluster_add_attr(esp_zb_hvac_clusters,
-                                                esp_zb_ota_cluster_create(&ota_cluster_cfg)));
+    esp_zb_attribute_list_t *esp_zb_ota_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
+    
+    /* Add client-specific OTA attributes */
+    esp_zb_zcl_ota_upgrade_client_variable_t client_vars = {
+        .timer_query = ESP_ZB_ZCL_OTA_UPGRADE_QUERY_TIMER_COUNT_DEF,
+        .hw_version = 0x0101,
+        .max_data_size = 223,
+    };
+    esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, ESP_ZB_ZCL_ATTR_OTA_UPGRADE_CLIENT_DATA_ID, &client_vars);
+    
+    uint16_t server_addr = 0xffff;
+    esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, ESP_ZB_ZCL_ATTR_OTA_UPGRADE_SERVER_ADDR_ID, &server_addr);
+    
+    uint8_t server_ep = 0xff;
+    esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, ESP_ZB_ZCL_ATTR_OTA_UPGRADE_SERVER_ENDPOINT_ID, &server_ep);
+    
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_ota_cluster(esp_zb_hvac_clusters, esp_zb_ota_cluster,
+                                                               ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE));
     ESP_LOGI(TAG, "  [OK] OTA cluster added (FW version: 0x%08lX)", ota_cluster_cfg.ota_upgrade_file_version);
     
     /* Create HVAC endpoint */
