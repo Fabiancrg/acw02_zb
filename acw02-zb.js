@@ -392,6 +392,7 @@ const definition = {
             },
         }),
     ],
+    ota: require('zigbee-herdsman-converters/lib/ota/zigbeeOTA'),
 };
 
 module.exports = definition;
