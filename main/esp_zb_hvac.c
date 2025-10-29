@@ -818,31 +818,23 @@ static void esp_zb_task(void *pvParameters)
 
     /* Add OTA cluster attributes for Zigbee2MQTT OTA version display */
     uint32_t current_file_version = ota_cluster_cfg.ota_upgrade_file_version; // e.g. 0x01000000 for v1.0.0.0
-    uint16_t current_stack_version = 0x0300; // Example: 0x0200 = stack version 2.0 (adjust as needed)
-    ESP_LOGI(TAG, "[OTA] Adding OTA cluster attribute 0x0003 (currentFileVersion): 0x%08lX", current_file_version);
+
+    const uint8_t ota_endpoint = HA_ESP_HVAC_ENDPOINT;
+    const uint16_t ota_cluster_id = 0x0019;
+    const char *ota_cluster_name = "OTA Upgrade";
+
+    ESP_LOGI(TAG, "[OTA] Adding OTA cluster attribute 0x0003 (currentFileVersion): 0x%08lX (ep=%d, cluster=0x%04X, name=%s)",
+        current_file_version, ota_endpoint, ota_cluster_id, ota_cluster_name);
     esp_err_t err1 = esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, 0x0003, &current_file_version); // currentFileVersion
     if (err1 != ESP_OK) {
-        ESP_LOGE(TAG, "[OTA] Failed to add attribute 0x0003: %s", esp_err_to_name(err1));
+        ESP_LOGE(TAG, "[OTA] Failed to add attribute 0x0003 (ep=%d, cluster=0x%04X, name=%s): %s",
+            ota_endpoint, ota_cluster_id, ota_cluster_name, esp_err_to_name(err1));
     } else {
-        ESP_LOGI(TAG, "[OTA] Successfully added attribute 0x0003");
+        ESP_LOGI(TAG, "[OTA] Successfully added attribute 0x0003 (ep=%d, cluster=0x%04X, name=%s)",
+            ota_endpoint, ota_cluster_id, ota_cluster_name);
     }
 
-
-    // Try to read the value of attribute 0x0002 (currentZigbeeStackVersion) from the OTA cluster
-    uint16_t read_stack_version = 0;
-    esp_err_t read_err = esp_zb_zcl_get_attribute_val(
-        HA_ESP_HVAC_ENDPOINT,
-        0x0019, // OTA Upgrade cluster
-        ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE,
-        0x0002, // currentZigbeeStackVersion
-        &read_stack_version,
-        sizeof(read_stack_version)
-    );
-    if (read_err == ESP_OK) {
-        ESP_LOGI(TAG, "[OTA] Read existing OTA attribute 0x0002 (currentZigbeeStackVersion): 0x%04X", read_stack_version);
-    } else {
-        ESP_LOGE(TAG, "[OTA] Failed to read OTA attribute 0x0002: %s", esp_err_to_name(read_err));
-    }
+    /* Note: Attribute 0x0002 (currentZigbeeStackVersion) is managed by the Zigbee stack and cannot be added manually */
 
     /* Add client-specific OTA attributes */
     esp_zb_zcl_ota_upgrade_client_variable_t client_vars = {
