@@ -5,11 +5,66 @@ cmake_minimum_required(VERSION 3.16)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # "Trim" the build. Include the minimal set of components, main, and anything it depends on.
 idf_build_set_property(MINIMAL_BUILD ON)
-set(PROJECT_VER "1.0.0")
+
+# Version configuration
+set(PROJECT_VER "1.1")
+set(BUILD_NUMBER 10)
+set(MANUFACTURER_CODE "0xFABC")
+set(IMAGE_TYPE "0x1000")
+set(ZIGBEE_STACK_VERSION "0x0003")  # Zigbee 3.0
+
+# Convert PROJECT_VER (e.g. 1.1.0) to 0xMMmmpppp format for OTA
+string(REPLACE "." ";" _ver_list ${PROJECT_VER})
+list(GET _ver_list 0 _ver_major)
+list(GET _ver_list 1 _ver_minor)
+# Calculate OTA version hex
+math(EXPR OTA_VERSION_HEX "((${_ver_major}) << 24) | ((${_ver_minor}) << 16) | (${BUILD_NUMBER})")
+# Convert to hex string for display
+string(LENGTH "00000000${OTA_VERSION_HEX}" _len)
+math(EXPR _start "${_len} - 8")
+string(SUBSTRING "00000000${OTA_VERSION_HEX}" ${_start} 8 OTA_VERSION_HEX_STR)
+
+# Generate date code
 string(TIMESTAMP DATE_CODE "%Y%m%d")
+
+# Add compile definitions
 add_compile_definitions(
-	FW_VERSION="${PROJECT_VER}"
+	FW_VERSION="${PROJECT_VER}.${BUILD_NUMBER}"
 	FW_DATE_CODE="${DATE_CODE}"
-	ZB_STACK_VERSION=30
+	FW_VERSION_MAJOR=${_ver_major}
+    FW_VERSION_MINOR=${_ver_minor}
+    FW_VERSION_PATCH=${BUILD_NUMBER}
+    OTA_FILE_VERSION=0x${OTA_VERSION_HEX_STR}
+    OTA_MANUFACTURER=${MANUFACTURER_CODE}
+    OTA_IMAGE_TYPE=${IMAGE_TYPE}
+    ZB_STACK_VERSION=${ZIGBEE_STACK_VERSION}
 )
+
 project(acw02_zb)
+
+# Find Python
+find_package(Python3 REQUIRED)
+
+
+# Automatically generate Zigbee OTA image after .bin is created
+add_custom_target(generate_ota ALL
+    COMMAND ${CMAKE_COMMAND} -E echo "================================================"
+    COMMAND ${CMAKE_COMMAND} -E echo "Generating Zigbee OTA image:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Version: ${PROJECT_VER}.${BUILD_NUMBER} (0x${OTA_VERSION_HEX_STR}) (${OTA_VERSION_HEX})"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Manufacturer: ${MANUFACTURER_CODE}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Image Type: ${IMAGE_TYPE}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Stack Version: ${ZIGBEE_STACK_VERSION}"
+    COMMAND ${CMAKE_COMMAND} -E echo "================================================"
+    COMMAND ${Python3_EXECUTABLE} 
+            "C:/Devel/Repositories/esp-zigbee-sdk-main/tools/image_builder_tool/image_builder_tool.py"
+            -f "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin"
+            -c "${CMAKE_BINARY_DIR}/${PROJECT_NAME}_v${PROJECT_VER}.${BUILD_NUMBER}.ota"
+            -m ${MANUFACTURER_CODE}
+            -i ${IMAGE_TYPE}
+            -v ${OTA_VERSION_HEX}
+            -s ${ZIGBEE_STACK_VERSION}
+    COMMAND ${CMAKE_COMMAND} -E echo "OTA file generated: ${CMAKE_BINARY_DIR}/${PROJECT_NAME}_v${PROJECT_VER}.${BUILD_NUMBER}.ota"
+    DEPENDS ${PROJECT_NAME}.elf
+    BYPRODUCTS "${CMAKE_BINARY_DIR}/${PROJECT_NAME}_v${PROJECT_VER}_${BUILD_NUMBER}.ota"
+    COMMENT "Generating Zigbee OTA image v${PROJECT_VER} (0x${OTA_VERSION_HEX})"
+)

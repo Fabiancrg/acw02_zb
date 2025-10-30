@@ -19,6 +19,7 @@
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
 #include "esp_zb_ota.h"
+#include "sdkconfig.h"
 
 #if !defined ZB_ROUTER_ROLE
 #error Define ZB_ROUTER_ROLE in idf.py menuconfig to compile Router source code.
@@ -823,10 +824,10 @@ static void esp_zb_task(void *pvParameters)
     /* Add OTA cluster for firmware updates */
     ESP_LOGI(TAG, "  [+] Adding OTA cluster (0x0019)...");
     esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
-        .ota_upgrade_file_version = esp_zb_ota_get_fw_version(),
+        .ota_upgrade_file_version = OTA_FILE_VERSION,     // From CMake
+        .ota_upgrade_manufacturer = OTA_MANUFACTURER,     // From CMake
+        .ota_upgrade_image_type = OTA_IMAGE_TYPE,         // From CMake
         .ota_upgrade_downloaded_file_ver = 0xFFFFFFFF,    // No pending update
-        .ota_upgrade_manufacturer = OTA_UPGRADE_MANUFACTURER,  
-        .ota_upgrade_image_type = OTA_UPGRADE_IMAGE_TYPE,
     };
     esp_zb_attribute_list_t *esp_zb_ota_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
 

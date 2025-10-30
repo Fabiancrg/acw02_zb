@@ -35,12 +35,14 @@ CONFIG_MBEDTLS_ECJPAKE_C=y
 #
 CONFIG_ZB_ENABLED=y
 CONFIG_ZB_ZCZR=y
+#CONFIG_ZB_MEM_CONFIG_MED=y
 # end of Zboss
 
 #
 # OTA (Over-The-Air) Updates
 #
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+#CONFIG_APP_ROLLBACK_ENABLE=y
 # end of OTA Updates
 
 # end of Component config
