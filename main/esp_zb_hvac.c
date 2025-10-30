@@ -19,6 +19,7 @@
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
 #include "esp_zb_ota.h"
+#include "esp_zigbee_trace.h"
 #include "sdkconfig.h"
 
 #if !defined ZB_ROUTER_ROLE
@@ -758,8 +759,9 @@ static void esp_zb_task(void *pvParameters)
     /* Add optional Basic cluster attributes that Z2M expects */
     int ver_major = 1, ver_minor = 0, ver_patch = 0;
     sscanf(FW_VERSION, "%d.%d.%d", &ver_major, &ver_minor, &ver_patch);
-    uint8_t app_version = ver_major;
-    uint8_t stack_version = ZB_STACK_VERSION;
+    // Encode version as (major << 4) | minor for Zigbee compatibility
+    uint8_t app_version = (ver_major << 4) | ver_minor;  // e.g., 1.1 = 0x11
+    uint8_t stack_version = (ZB_STACK_VERSION << 4) | 0; // e.g., 3.0 = 0x30
     uint8_t hw_version = 1;
     // Use CMake-injected version and date for Zigbee attributes
     char date_code[17];      // 16 chars max for Zigbee date code
@@ -1121,6 +1123,10 @@ static void esp_zb_task(void *pvParameters)
     
     ESP_LOGI(TAG, "[CFG] Setting Zigbee channel mask: 0x%08lX", (unsigned long)ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    
+    /* Enable OTA logging for debugging */
+    ESP_LOGI(TAG, "[TRACE] Enabling OTA subsystem tracing for debugging");
+    esp_zb_set_trace_level_mask(ESP_ZB_TRACE_LEVEL_DEBUG, ESP_ZB_TRACE_SUBSYSTEM_OTA);
     
     ESP_LOGI(TAG, "[START] Starting Zigbee stack...");
     ESP_ERROR_CHECK(esp_zb_start(false));
