@@ -762,10 +762,11 @@ static void esp_zb_task(void *pvParameters)
     // Encode version as (major << 4) | minor for Zigbee compatibility
     uint8_t app_version = (ver_major << 4) | ver_minor;  // e.g., 1.1 = 0x11
     uint8_t stack_version = (ZB_STACK_VERSION << 4) | 0; // e.g., 3.0 = 0x30
-    uint8_t hw_version = 1;
+    
     // Use CMake-injected version and date for Zigbee attributes
     char date_code[17];      // 16 chars max for Zigbee date code
     char sw_build_id[17];    // 16 chars max for Zigbee sw_build_id
+    uint8_t hw_version = 1;  //> To add in CMAKE also%
 
     fill_zcl_string(date_code, sizeof(date_code), FW_DATE_CODE);
     fill_zcl_string(sw_build_id, sizeof(sw_build_id), FW_VERSION);
