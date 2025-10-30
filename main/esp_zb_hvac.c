@@ -41,6 +41,14 @@ static esp_err_t button_init(void);
 static void button_task(void *arg);
 static void factory_reset_device(uint8_t param);
 
+// Helper to fill a Zigbee ZCL string (first byte = length, then chars)
+static void fill_zcl_string(char *buf, size_t bufsize, const char *src) {
+    size_t len = strlen(src);
+    if (len > bufsize - 1) len = bufsize - 1; // Reserve 1 byte for length
+    buf[0] = (uint8_t)len;
+    memcpy(&buf[1], src, len);
+}
+
 /* Factory reset function */
 static void factory_reset_device(uint8_t param)
 {
@@ -747,17 +755,23 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_attribute_list_t *esp_zb_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     
     /* Add optional Basic cluster attributes that Z2M expects */
-    uint8_t app_version = 1;
-    uint8_t stack_version = 3;
+    int ver_major = 1, ver_minor = 0, ver_patch = 0;
+    sscanf(FW_VERSION, "%d.%d.%d", &ver_major, &ver_minor, &ver_patch);
+    uint8_t app_version = ver_major;
+    uint8_t stack_version = ZB_STACK_VERSION;
     uint8_t hw_version = 1;
-    char date_code[] = "\x08""20251013";     // Length-prefixed: 8 chars = "20251013"
-    char sw_build_id[] = "\x06""v1.0.0";     // Length-prefixed: 6 chars = "v1.0.0"
+    // Use CMake-injected version and date for Zigbee attributes
+    char date_code[17];      // 16 chars max for Zigbee date code
+    char sw_build_id[17];    // 16 chars max for Zigbee sw_build_id
+
+    fill_zcl_string(date_code, sizeof(date_code), FW_DATE_CODE);
+    fill_zcl_string(sw_build_id, sizeof(sw_build_id), FW_VERSION);
     
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID, &app_version);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_STACK_VERSION_ID, &stack_version);
     esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, date_code);
-    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, sw_build_id);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID, (void*)date_code);
+    esp_zb_basic_cluster_add_attr(esp_zb_basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, (void*)sw_build_id);
     
     /* Add locationDescription for error text (standard Basic cluster attribute 0x0010) */
     static char location_desc[65] = "\x00";  // Static buffer, empty initially (length = 0)
@@ -810,29 +824,20 @@ static void esp_zb_task(void *pvParameters)
     ESP_LOGI(TAG, "  [+] Adding OTA cluster (0x0019)...");
     esp_zb_ota_cluster_cfg_t ota_cluster_cfg = {
         .ota_upgrade_file_version = esp_zb_ota_get_fw_version(),
-        .ota_upgrade_downloaded_file_ver = 0,
-        .ota_upgrade_manufacturer = 0x1049,  // Espressif manufacturer code
-        .ota_upgrade_image_type = 0x0000,
+        .ota_upgrade_downloaded_file_ver = 0xFFFFFFFF,    // No pending update
+        .ota_upgrade_manufacturer = OTA_UPGRADE_MANUFACTURER,  
+        .ota_upgrade_image_type = OTA_UPGRADE_IMAGE_TYPE,
     };
     esp_zb_attribute_list_t *esp_zb_ota_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
 
     /* Add OTA cluster attributes for Zigbee2MQTT OTA version display */
     uint32_t current_file_version = ota_cluster_cfg.ota_upgrade_file_version; // e.g. 0x01000000 for v1.0.0.0
-
-    const uint8_t ota_endpoint = HA_ESP_HVAC_ENDPOINT;
-    const uint16_t ota_cluster_id = 0x0019;
-    const char *ota_cluster_name = "OTA Upgrade";
-
-    ESP_LOGI(TAG, "[OTA] Adding OTA cluster attribute 0x0003 (currentFileVersion): 0x%08lX (ep=%d, cluster=0x%04X, name=%s)",
-        current_file_version, ota_endpoint, ota_cluster_id, ota_cluster_name);
-    esp_err_t err1 = esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, 0x0003, &current_file_version); // currentFileVersion
-    if (err1 != ESP_OK) {
-        ESP_LOGE(TAG, "[OTA] Failed to add attribute 0x0003 (ep=%d, cluster=0x%04X, name=%s): %s",
-            ota_endpoint, ota_cluster_id, ota_cluster_name, esp_err_to_name(err1));
-    } else {
-        ESP_LOGI(TAG, "[OTA] Successfully added attribute 0x0003 (ep=%d, cluster=0x%04X, name=%s)",
-            ota_endpoint, ota_cluster_id, ota_cluster_name);
-    }
+    // Set OTA cluster version fields to match running firmware
+    //uint8_t ota_app_version = ver_major;
+    //uint8_t ota_stack_version = ver_minor;
+    //esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, 0x0000, &ota_app_version); // currentZigbeeStackVersion (if not stack-managed)
+    //esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, 0x0001, &ota_stack_version); // currentZigbeeStackBuild (if not stack-managed)
+    esp_zb_ota_cluster_add_attr(esp_zb_ota_cluster, 0x0003, &current_file_version); // currentFileVersion
 
     /* Note: Attribute 0x0002 (currentZigbeeStackVersion) is managed by the Zigbee stack and cannot be added manually */
 
