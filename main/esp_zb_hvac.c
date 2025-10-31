@@ -21,6 +21,7 @@
 #include "esp_zb_ota.h"
 #include "esp_zigbee_trace.h"
 #include "sdkconfig.h"
+#include "esp_ota_ops.h"
 
 #if !defined ZB_ROUTER_ROLE
 #error Define ZB_ROUTER_ROLE in idf.py menuconfig to compile Router source code.
@@ -1139,6 +1140,13 @@ static void esp_zb_task(void *pvParameters)
 
 void app_main(void)
 {
+    // Mark OTA app as valid to prevent rollback if running from OTA partition
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *factory = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    if (running && factory && running != factory) {
+        esp_ota_mark_app_valid_cancel_rollback();
+    }
+    
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
