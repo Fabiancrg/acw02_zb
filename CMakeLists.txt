@@ -15,12 +15,21 @@ set(ZIGBEE_STACK_VERSION "0x0003")  # Zigbee 3.0
 
 # Convert PROJECT_VER (e.g. 1.1.0) to 0xMMmmpppp format for OTA
 string(REPLACE "." ";" _ver_list ${PROJECT_VER})
+
 list(GET _ver_list 0 _ver_major)
 list(GET _ver_list 1 _ver_minor)
 # Calculate OTA version dec
 math(EXPR OTA_VERSION_DEC "((${_ver_major}) << 24) | ((${_ver_minor}) << 16) | (${BUILD_NUMBER})")
-# Set hex string manually for now (01 01 00 28 for 1.1.0.40)
-set(OTA_VERSION_HEX_STR "01010028")
+# Convert OTA_VERSION_DEC to 8-digit uppercase hex string (CMake <3.19 workaround)
+set(_hex_chars "0123456789ABCDEF")
+set(_value ${OTA_VERSION_DEC})
+set(OTA_VERSION_HEX_STR "")
+foreach(_i RANGE 1 8)
+    math(EXPR _digit "${_value} % 16")
+    string(SUBSTRING "${_hex_chars}" ${_digit} 1 _char)
+    set(OTA_VERSION_HEX_STR "${_char}${OTA_VERSION_HEX_STR}")
+    math(EXPR _value "${_value} / 16")
+endforeach()
 
 # Generate date code
 string(TIMESTAMP DATE_CODE "%Y%m%d")
