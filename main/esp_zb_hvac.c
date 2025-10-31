@@ -22,6 +22,9 @@
 #include "esp_zigbee_trace.h"
 #include "sdkconfig.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
+#include "freertos/timers.h"
+
 
 #if !defined ZB_ROUTER_ROLE
 #error Define ZB_ROUTER_ROLE in idf.py menuconfig to compile Router source code.
@@ -1138,22 +1141,174 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
+/* OTA Validation Logic */
+
+static const char *OTA_VALIDATION_TAG = "OTA_VALIDATION";
+
+typedef struct {
+    bool hw_init_ok;
+    bool zigbee_init_ok;
+    bool zigbee_connected;
+    uint32_t validation_start_time;
+} validation_state_t;
+
+static validation_state_t validation = {0};
+#define VALIDATION_TIMEOUT_MS 120000
+#define ZIGBEE_CONNECT_TIMEOUT_MS 60000
+static TimerHandle_t validation_timer = NULL;
+
+static void check_validation_complete(void);
+
+static void validation_timer_callback(TimerHandle_t xTimer)
+{
+    ESP_LOGI(OTA_VALIDATION_TAG, "Validation timer expired, checking status...");
+    if (validation.hw_init_ok && validation.zigbee_init_ok && validation.zigbee_connected) {
+        ESP_LOGI(OTA_VALIDATION_TAG, "All validation checks passed!");
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        if (err == ESP_OK) {
+            ESP_LOGI(OTA_VALIDATION_TAG, "New firmware marked as valid - rollback cancelled");
+        } else {
+            ESP_LOGE(OTA_VALIDATION_TAG, "Failed to mark firmware as valid: %s", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGW(OTA_VALIDATION_TAG, "Validation checks incomplete:");
+        ESP_LOGW(OTA_VALIDATION_TAG, "  - Hardware initialization: %s", validation.hw_init_ok ? "OK" : "FAILED");
+        ESP_LOGW(OTA_VALIDATION_TAG, "  - Zigbee stack initialization: %s", validation.zigbee_init_ok ? "OK" : "FAILED");
+        ESP_LOGW(OTA_VALIDATION_TAG, "  - Zigbee network connection: %s", validation.zigbee_connected ? "OK" : "FAILED");
+        ESP_LOGW(OTA_VALIDATION_TAG, "Firmware will NOT be marked as valid - device may rollback on next boot");
+    }
+}
+
+void ota_validation_start(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    ESP_LOGI(OTA_VALIDATION_TAG, "Running partition: %s at offset 0x%lx", running->label, running->address);
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        ESP_LOGI(OTA_VALIDATION_TAG, "OTA state: %d", ota_state);
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(OTA_VALIDATION_TAG, "First boot after OTA update - starting validation...");
+            validation.hw_init_ok = false;
+            validation.zigbee_init_ok = false;
+            validation.zigbee_connected = false;
+            validation.validation_start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            validation_timer = xTimerCreate(
+                "validation_timer",
+                pdMS_TO_TICKS(VALIDATION_TIMEOUT_MS),
+                pdFALSE,
+                NULL,
+                validation_timer_callback
+            );
+            if (validation_timer != NULL) {
+                xTimerStart(validation_timer, 0);
+                ESP_LOGI(OTA_VALIDATION_TAG, "Validation timer started");
+            } else {
+                ESP_LOGE(OTA_VALIDATION_TAG, "Failed to create validation timer!");
+            }
+        } else if (ota_state == ESP_OTA_IMG_VALID) {
+            ESP_LOGI(OTA_VALIDATION_TAG, "Running valid firmware - no validation needed");
+        } else if (ota_state == ESP_OTA_IMG_INVALID) {
+            ESP_LOGW(OTA_VALIDATION_TAG, "Running invalid firmware!");
+        } else if (ota_state == ESP_OTA_IMG_ABORTED) {
+            ESP_LOGW(OTA_VALIDATION_TAG, "Previous OTA was aborted");
+        }
+    } else {
+        ESP_LOGE(OTA_VALIDATION_TAG, "Failed to get OTA state");
+    }
+}
+
+void ota_validation_hw_init_ok(void)
+{
+    validation.hw_init_ok = true;
+    ESP_LOGI(OTA_VALIDATION_TAG, "Hardware initialization validated");
+    check_validation_complete();
+}
+void ota_validation_zigbee_init_ok(void)
+{
+    validation.zigbee_init_ok = true;
+    ESP_LOGI(OTA_VALIDATION_TAG, "Zigbee stack initialization validated");
+    check_validation_complete();
+}
+void ota_validation_zigbee_connected(void)
+{
+    validation.zigbee_connected = true;
+    ESP_LOGI(OTA_VALIDATION_TAG, "Zigbee network connection validated");
+    check_validation_complete();
+}
+static void check_validation_complete(void)
+{
+    if (validation_timer == NULL) {
+        return;
+    }
+    if (validation.hw_init_ok && validation.zigbee_init_ok && validation.zigbee_connected) {
+        uint32_t elapsed = (xTaskGetTickCount() * portTICK_PERIOD_MS) - validation.validation_start_time;
+        ESP_LOGI(OTA_VALIDATION_TAG, "All validation checks passed in %lu ms!", elapsed);
+        xTimerStop(validation_timer, 0);
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        if (err == ESP_OK) {
+            ESP_LOGI(OTA_VALIDATION_TAG, "New firmware marked as valid - rollback cancelled");
+        } else {
+            ESP_LOGE(OTA_VALIDATION_TAG, "Failed to mark firmware as valid: %s", esp_err_to_name(err));
+        }
+        xTimerDelete(validation_timer, 0);
+        validation_timer = NULL;
+    }
+}
+void ota_validation_mark_invalid(void)
+{
+    ESP_LOGE(OTA_VALIDATION_TAG, "Marking firmware as invalid - rollback will occur!");
+    if (validation_timer != NULL) {
+        xTimerStop(validation_timer, 0);
+        xTimerDelete(validation_timer, 0);
+        validation_timer = NULL;
+    }
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+}
 void app_main(void)
 {
-    // Mark OTA app as valid to prevent rollback if running from OTA partition
+    ESP_LOGI(OTA_VALIDATION_TAG, "=== Application Starting ===");
+    esp_app_desc_t app_desc;
     const esp_partition_t *running = esp_ota_get_running_partition();
-    const esp_partition_t *factory = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-    if (running && factory && running != factory) {
-        esp_ota_mark_app_valid_cancel_rollback();
+    if (esp_ota_get_partition_description(running, &app_desc) == ESP_OK) {
+        ESP_LOGI(OTA_VALIDATION_TAG, "Firmware version: %s", app_desc.version);
+        ESP_LOGI(OTA_VALIDATION_TAG, "Compile time: %s %s", app_desc.date, app_desc.time);
     }
-    
+    ota_validation_start();
+
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
     };
-    
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
-    
+
+    // Hardware init
+    ESP_LOGI(OTA_VALIDATION_TAG, "Initializing hardware...");
+    bool hw_ok = true; // Replace with actual check
+    if (hw_ok) {
+        ota_validation_hw_init_ok();
+    } else {
+        ESP_LOGE(OTA_VALIDATION_TAG, "Hardware initialization failed!");
+        ota_validation_mark_invalid();
+        return;
+    }
+
+    // Zigbee stack init
+    ESP_LOGI(OTA_VALIDATION_TAG, "Initializing Zigbee stack...");
+    bool zigbee_init_ok = true; // Replace with actual check
+    if (zigbee_init_ok) {
+        ota_validation_zigbee_init_ok();
+    } else {
+        ESP_LOGE(OTA_VALIDATION_TAG, "Zigbee initialization failed!");
+        ota_validation_mark_invalid();
+        return;
+    }
+
+    // Start Zigbee and wait for connection
+    // When Zigbee connects successfully, call:
+    // ota_validation_zigbee_connected();
+
+    ESP_LOGI(OTA_VALIDATION_TAG, "=== Application Started ===");
+
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
 }

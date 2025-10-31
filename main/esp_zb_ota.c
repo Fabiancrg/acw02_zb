@@ -98,7 +98,20 @@ esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t me
                 return ret;
             }
 
-            // Set boot partition
+            // Verify the written image
+            ESP_LOGI(TAG, "Verifying OTA image...");
+            esp_app_desc_t new_app_info;
+            ret = esp_ota_get_partition_description(update_partition, &new_app_info);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to get new app description: %s", esp_err_to_name(ret));
+                ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+                return ret;
+            }
+            
+            ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
+            ESP_LOGI(TAG, "New firmware compile time: %s %s", new_app_info.date, new_app_info.time);
+
+            // CRITICAL: Set boot partition to the newly written partition
             ret = esp_ota_set_boot_partition(update_partition);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(ret));
@@ -106,9 +119,19 @@ esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t me
                 return ret;
             }
 
-            ESP_LOGI(TAG, "OTA upgrade successful, rebooting...");
+            ESP_LOGI(TAG, "OTA upgrade successful!");
+            ESP_LOGI(TAG, "Next boot will be from: %s", update_partition->label);
+            ESP_LOGI(TAG, "Firmware will enter validation mode on next boot");
+            ESP_LOGI(TAG, "Rebooting in 3 seconds...");
+            
             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_APPLY;
+            
+            // Small delay to ensure logs are printed
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            
             // Reboot to apply the update
+            // After reboot, the new firmware will be in ESP_OTA_IMG_PENDING_VERIFY state
+            // and must call esp_ota_mark_app_valid_cancel_rollback() to confirm it works
             esp_restart();
             break;
 
@@ -172,7 +195,9 @@ esp_err_t esp_zb_ota_register_callbacks(void)
 {
     ESP_LOGI(TAG, "OTA callbacks handled automatically by ESP-Zigbee SDK after client init");
     return ESP_OK;
-}/**
+}
+
+/**
  * @brief Get current OTA status
  */
 esp_zb_zcl_ota_upgrade_status_t esp_zb_ota_get_status(void)
