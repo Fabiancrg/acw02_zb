@@ -537,6 +537,16 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGD(TAG, "Report attribute callback");
         break;
         
+    case ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID:
+        ESP_LOGI(TAG, "[OTA] Upgrade value callback triggered");
+        ret = zb_ota_upgrade_value_handler(*(esp_zb_zcl_ota_upgrade_value_message_t *)message);
+        break;
+        
+    case ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID:
+        ESP_LOGI(TAG, "[OTA] Query image response callback triggered");
+        ret = zb_ota_query_image_resp_handler(*(esp_zb_zcl_ota_upgrade_query_image_resp_message_t *)message);
+        break;
+        
     default:
         ESP_LOGD(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
         break;

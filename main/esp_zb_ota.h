@@ -45,6 +45,22 @@ esp_zb_zcl_ota_upgrade_status_t esp_zb_ota_get_status(void);
  */
 uint32_t esp_zb_ota_get_fw_version(void);
 
+/**
+ * @brief OTA upgrade value callback handler
+ * 
+ * @param message OTA upgrade value message
+ * @return ESP_OK on success
+ */
+esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t message);
+
+/**
+ * @brief OTA query image response callback handler
+ * 
+ * @param message OTA query image response message
+ * @return ESP_OK on success
+ */
+esp_err_t zb_ota_query_image_resp_handler(esp_zb_zcl_ota_upgrade_query_image_resp_message_t message);
+
 #ifdef __cplusplus
 }
 #endif
