@@ -47,6 +47,13 @@ static esp_err_t button_init(void);
 static void button_task(void *arg);
 static void factory_reset_device(uint8_t param);
 
+/* OTA validation functions */
+void ota_validation_start(void);
+void ota_validation_hw_init_ok(void);
+void ota_validation_zigbee_init_ok(void);
+void ota_validation_zigbee_connected(void);
+void ota_validation_mark_invalid(void);
+
 // Helper to fill a Zigbee ZCL string (first byte = length, then chars)
 static void fill_zcl_string(char *buf, size_t bufsize, const char *src) {
     size_t len = strlen(src);
