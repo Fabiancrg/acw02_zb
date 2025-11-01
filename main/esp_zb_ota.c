@@ -187,13 +187,13 @@ esp_err_t zb_ota_query_image_resp_handler(esp_zb_zcl_ota_upgrade_query_image_res
 /**
  * @brief Register OTA callbacks for client device
  *
- * Note: ESP-Zigbee SDK handles OTA callbacks automatically after esp_zb_ota_client_init().
+ * Note: ESP-Zigbee SDK handles OTA callbacks automatically when OTA cluster is added.
  * The callback functions zb_ota_upgrade_value_handler and zb_ota_query_image_resp_handler
  * are called automatically by the SDK during OTA operations.
  */
 esp_err_t esp_zb_ota_register_callbacks(void)
 {
-    ESP_LOGI(TAG, "OTA callbacks handled automatically by ESP-Zigbee SDK after client init");
+    ESP_LOGI(TAG, "OTA callbacks handled automatically by ESP-Zigbee SDK");
     return ESP_OK;
 }
 

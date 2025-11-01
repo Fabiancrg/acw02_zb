@@ -343,6 +343,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 #endif
             
             ESP_LOGI(TAG, "[JOIN] Device is now online and ready");
+            
+            /* Mark Zigbee connection as successful for OTA validation */
+            ota_validation_zigbee_connected();
+            
             ESP_LOGI(TAG, "[JOIN] Scheduling periodic HVAC updates...");
             
             /* Start periodic HVAC status updates */
