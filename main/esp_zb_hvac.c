@@ -367,6 +367,15 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                                   ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
         break;
+
+    case ESP_ZB_NLME_STATUS_INDICATION:
+        ESP_LOGD(TAG, "[NLME] Network status indication (status: %s)", esp_err_to_name(err_status));
+        if (err_status == ESP_OK) {
+            ESP_LOGD(TAG, "[NLME] Device successfully connected to network");
+            /* Mark Zigbee connection as successful for OTA validation */
+            ota_validation_zigbee_connected();
+        }
+        break;
         
     default:
         ESP_LOGI(TAG, "[ZDO] Signal: %s (0x%x), status: %s", 
@@ -538,7 +547,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         break;
         
     case ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID:
-        ESP_LOGI(TAG, "[OTA] Upgrade value callback triggered");
+        ESP_LOGD(TAG, "[OTA] Upgrade value callback triggered");
         ret = zb_ota_upgrade_value_handler(*(esp_zb_zcl_ota_upgrade_value_message_t *)message);
         break;
         
@@ -1174,7 +1183,7 @@ typedef struct {
 } validation_state_t;
 
 static validation_state_t validation = {0};
-#define VALIDATION_TIMEOUT_MS 120000
+#define VALIDATION_TIMEOUT_MS 180000  // 3 minutes - allows time for Zigbee network rejoin
 #define ZIGBEE_CONNECT_TIMEOUT_MS 60000
 static TimerHandle_t validation_timer = NULL;
 

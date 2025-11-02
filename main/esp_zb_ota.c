@@ -21,6 +21,8 @@ static esp_zb_zcl_ota_upgrade_status_t ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRA
 /* OTA partition handle */
 static const esp_partition_t *update_partition = NULL;
 static esp_ota_handle_t update_handle = 0;
+static uint32_t binary_file_len = 0;
+static uint32_t total_received = 0;
 
 /**
  * @brief Initialize OTA functionality
@@ -63,6 +65,8 @@ esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t me
         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START:
             ESP_LOGI(TAG, "OTA upgrade started");
             ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_START;
+            total_received = 0;
+            binary_file_len = 0;
 
             // Begin OTA update
             ret = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
@@ -71,19 +75,64 @@ esp_err_t zb_ota_upgrade_value_handler(esp_zb_zcl_ota_upgrade_value_message_t me
                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
                 return ret;
             }
-            ESP_LOGI(TAG, "OTA write started");
+            ESP_LOGI(TAG, "OTA write session started");
             break;
 
         case ESP_ZB_ZCL_OTA_UPGRADE_STATUS_RECEIVE:
-            ESP_LOGD(TAG, "OTA receiving data, offset: %ld, size: %d",
-                     message.ota_header.image_size, message.payload_size);
-
-            // Write received data to OTA partition
-            ret = esp_ota_write(update_handle, message.payload, message.payload_size);
+            // Handle the first chunk specially to detect and skip OTA header
+            if (total_received == 0) {
+                // Debug: dump first few bytes to understand the data format
+                ESP_LOGI(TAG, "First chunk received: %d bytes", message.payload_size);
+                ESP_LOG_BUFFER_HEX_LEVEL(TAG, message.payload, 
+                                        message.payload_size > 128 ? 128 : message.payload_size, 
+                                        ESP_LOG_INFO);
+                
+                // Search for the ESP32 magic byte (0xE9) in the first chunk
+                int magic_offset = -1;
+                for (int i = 0; i < message.payload_size && i < 256; i++) {
+                    if (message.payload[i] == 0xE9) {
+                        magic_offset = i;
+                        ESP_LOGI(TAG, "Found ESP32 magic byte (0xE9) at offset %d", magic_offset);
+                        break;
+                    }
+                }
+                
+                if (magic_offset >= 0) {
+                    // Found the ESP32 binary, skip everything before it
+                    ESP_LOGI(TAG, "Skipping %d bytes before ESP32 binary", magic_offset);
+                    ESP_LOGI(TAG, "Writing %d bytes from first chunk", 
+                             message.payload_size - magic_offset);
+                    
+                    ret = esp_ota_write(update_handle, message.payload + magic_offset, 
+                                      message.payload_size - magic_offset);
+                    total_received += message.payload_size - magic_offset;
+                } else {
+                    ESP_LOGE(TAG, "No ESP32 magic byte (0xE9) found in first %d bytes", 
+                             message.payload_size);
+                    ESP_LOGE(TAG, "Cannot proceed with OTA update");
+                    ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
+                    return ESP_ERR_INVALID_ARG;
+                }
+            } else {
+                // Subsequent chunks - write directly
+                ESP_LOGD(TAG, "OTA receiving chunk: %d bytes (total: %ld bytes)",
+                         message.payload_size, total_received);
+                
+                ret = esp_ota_write(update_handle, message.payload, message.payload_size);
+                total_received += message.payload_size;
+            }
+            
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "esp_ota_write failed: %s", esp_err_to_name(ret));
                 ota_upgrade_status = ESP_ZB_ZCL_OTA_UPGRADE_STATUS_ERROR;
                 return ret;
+            }
+            
+            // Log progress every ~50KB
+            static uint32_t last_log = 0;
+            if (total_received - last_log > 50000) {
+                ESP_LOGI(TAG, "OTA progress: %ld bytes written", total_received);
+                last_log = total_received;
             }
             break;
 
