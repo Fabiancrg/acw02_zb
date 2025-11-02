@@ -1261,19 +1261,33 @@ void ota_validation_zigbee_init_ok(void)
 }
 void ota_validation_zigbee_connected(void)
 {
+    // Only update validation state if timer is active (we're in validation mode)
+    if (validation_timer == NULL) {
+        return;
+    }
+    
     validation.zigbee_connected = true;
     ESP_LOGI(OTA_VALIDATION_TAG, "Zigbee network connection validated");
     check_validation_complete();
 }
 static void check_validation_complete(void)
 {
+    // Validation timer should exist during validation - if not, we're not in validation mode
     if (validation_timer == NULL) {
+        ESP_LOGD(OTA_VALIDATION_TAG, "Not in validation mode, ignoring check");
         return;
     }
+    
     if (validation.hw_init_ok && validation.zigbee_init_ok && validation.zigbee_connected) {
         uint32_t elapsed = (xTaskGetTickCount() * portTICK_PERIOD_MS) - validation.validation_start_time;
         ESP_LOGI(OTA_VALIDATION_TAG, "All validation checks passed in %lu ms!", elapsed);
+        
+        // Stop the timer
         xTimerStop(validation_timer, 0);
+        xTimerDelete(validation_timer, 0);
+        validation_timer = NULL;
+        
+        // Mark firmware as valid
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
         if (err == ESP_OK) {
             ESP_LOGI(OTA_VALIDATION_TAG, "New firmware marked as valid - rollback cancelled");
