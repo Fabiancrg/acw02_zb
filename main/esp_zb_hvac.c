@@ -15,6 +15,7 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "esp_intr_alloc.h"
+#include "board.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "esp_zb_hvac.h"
 #include "hvac_driver.h"
@@ -393,9 +394,13 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
     ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, 
                        TAG, "Received message: error status(%d)", message->info.status);
     
-    ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)", 
+    /* Log RX message details - RSSI/LQI may be in message->info or require lower-layer API */
+    ESP_LOGI(TAG, "RX: endpoint(%d), cluster(0x%x), attr(0x%x), size(%d)", 
              message->info.dst_endpoint, message->info.cluster,
              message->attribute.id, message->attribute.data.size);
+    
+    /* Note: To get actual RSSI/LQI, check esp_zb SDK docs for message->info fields or 
+     * use esp_zigbee_zcl_get_attribute() / lower-layer ieee802154 stats if available */
     
     if (message->info.dst_endpoint == HA_ESP_HVAC_ENDPOINT) {
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT) {
@@ -752,6 +757,16 @@ static void hvac_periodic_update(uint8_t param)
     /* Send keepalive to HVAC */
     hvac_send_keepalive();
     
+    /* Log current Zigbee TX power for monitoring (every 30s with HVAC updates) */
+    static uint8_t log_counter = 0;
+    if (++log_counter >= 10) {  // Log every ~5 minutes (10 * 30s)
+        int8_t tx_power = 0;
+        esp_zb_get_tx_power(&tx_power);
+        ESP_LOGI(TAG, "[RF] Zigbee TX power: %d dBm", tx_power);
+        /* Note: RX RSSI/LQI is logged per-message in attribute handler */
+        log_counter = 0;
+    }
+    
     /* Schedule next update */
     esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_periodic_update, 0, HVAC_UPDATE_INTERVAL_MS);
 }
@@ -771,8 +786,51 @@ static void esp_zb_task(void *pvParameters)
             },
         },
     };
+    /* Configure antenna switch for XIAO ESP32-C6 if enabled in board.h */
+#if defined(CONFIG_IDF_TARGET_ESP32C6)
+#if ENABLE_XIAO_EXTERNAL_ANT
+    /* Drive FM8625H switch: GPIO3 = LOW, GPIO14 = HIGH to select external antenna */
+    gpio_reset_pin(XIAO_ANT_GPIO_SEL0);
+    gpio_set_direction(XIAO_ANT_GPIO_SEL0, GPIO_MODE_OUTPUT);
+    gpio_set_level(XIAO_ANT_GPIO_SEL0, 0);
+
+    gpio_reset_pin(XIAO_ANT_GPIO_SEL1);
+    gpio_set_direction(XIAO_ANT_GPIO_SEL1, GPIO_MODE_OUTPUT);
+    gpio_set_level(XIAO_ANT_GPIO_SEL1, 1);
+    ESP_LOGW(TAG, "RF switch set for XIAO ESP32-C6: external antenna enabled");
+#else
+    gpio_reset_pin(XIAO_ANT_GPIO_SEL0);
+    gpio_set_direction(XIAO_ANT_GPIO_SEL0, GPIO_MODE_OUTPUT);
+    gpio_set_level(XIAO_ANT_GPIO_SEL0, 1);
+
+    gpio_reset_pin(XIAO_ANT_GPIO_SEL1);
+    gpio_set_direction(XIAO_ANT_GPIO_SEL1, GPIO_MODE_OUTPUT);
+    gpio_set_level(XIAO_ANT_GPIO_SEL1, 0);
+    ESP_LOGW(TAG, "RF switch set for XIAO ESP32-C6: onboard antenna enabled");
+#endif
+#endif
+
     esp_zb_init(&zb_nwk_cfg);
     ESP_LOGI(TAG, "[OK] Zigbee stack initialized");
+
+    /* Log current Zigbee TX power and optionally apply a default from sdkconfig */
+    {
+    int8_t cur_power = 0;
+    esp_zb_get_tx_power(&cur_power);
+    ESP_LOGI(TAG, "Current Zigbee TX power: %d dBm", cur_power);
+
+#if defined(CONFIG_ZB_DEFAULT_TX_POWER)
+    /* If CONFIG_ZB_DEFAULT_TX_POWER is set in sdkconfig, apply it and show result */
+    int8_t desired = CONFIG_ZB_DEFAULT_TX_POWER;
+    ESP_LOGI(TAG, "CONFIG_ZB_DEFAULT_TX_POWER is set to %d dBm - applying...", desired);
+    esp_zb_set_tx_power(desired);
+    int8_t new_power = 0;
+    esp_zb_get_tx_power(&new_power);
+    ESP_LOGI(TAG, "New Zigbee TX power: %d dBm", new_power);
+#else
+    ESP_LOGD(TAG, "No default Zigbee TX power configured (CONFIG_ZB_DEFAULT_TX_POWER not set)");
+#endif
+    }
     
     /* Create endpoint list */
     ESP_LOGI(TAG, "[INIT] Creating endpoint list...");

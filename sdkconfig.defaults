@@ -45,4 +45,8 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 #CONFIG_APP_ROLLBACK_ENABLE=y
 # end of OTA Updates
 
+# Default Zigbee TX power applied at startup (in dBm). If not set, current
+# value will just be printed and no change applied. Example to force 8 dBm:
+# CONFIG_ZB_DEFAULT_TX_POWER=8
+
 # end of Component config
