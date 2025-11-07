@@ -392,7 +392,7 @@ const definition = {
             },
         }),
     ],
-    oota: true,
+    ota: true,
 };
 
 module.exports = definition;
