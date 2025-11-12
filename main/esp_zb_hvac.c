@@ -877,16 +877,51 @@ static void esp_zb_task(void *pvParameters)
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_LOGI(TAG, "  [OK] Basic cluster added with extended attributes");
     
-    /* Create Thermostat cluster */
-    ESP_LOGI(TAG, "  [+] Adding Thermostat cluster (0x0201)...");
-    esp_zb_thermostat_cluster_cfg_t thermostat_cfg = {
-        .local_temperature = 25 * 100,                    // 25°C in centidegrees
-        .occupied_cooling_setpoint = 24 * 100,            // 24°C default cooling setpoint
-        .occupied_heating_setpoint = 22 * 100,            // 22°C default heating setpoint
-        .control_sequence_of_operation = 0x04,            // Cooling and heating
-        .system_mode = 0x00,                              // Off
-    };
-    esp_zb_attribute_list_t *esp_zb_thermostat_cluster = esp_zb_thermostat_cluster_create(&thermostat_cfg);
+    /* Create Thermostat cluster with REPORTING flag for persistence */
+    ESP_LOGI(TAG, "  [+] Adding Thermostat cluster (0x0201) with REPORTING flag...");
+    
+    /* Create empty thermostat cluster */
+    esp_zb_attribute_list_t *esp_zb_thermostat_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT);
+    
+    /* Add mandatory attributes with REPORTING flag */
+    int16_t local_temp = 25 * 100;  // 25°C default
+    int16_t cooling_setpoint = 24 * 100;  // 24°C default
+    int16_t heating_setpoint = 22 * 100;  // 22°C default
+    uint8_t control_sequence = 0x04;  // Cooling and heating
+    uint8_t system_mode = 0x00;  // Off
+    
+    /* Local temperature - with REPORTING flag for automatic reports */
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_thermostat_cluster, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                            ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
+                                            ESP_ZB_ZCL_ATTR_TYPE_S16,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &local_temp));
+    
+    /* Cooling setpoint - with REPORTING flag */
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_thermostat_cluster, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID,
+                                            ESP_ZB_ZCL_ATTR_TYPE_S16,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &cooling_setpoint));
+    
+    /* Heating setpoint - with REPORTING flag */
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_thermostat_cluster, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                            ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID,
+                                            ESP_ZB_ZCL_ATTR_TYPE_S16,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &heating_setpoint));
+    
+    /* System mode - with REPORTING flag */
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_thermostat_cluster, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                            ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID,
+                                            ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &system_mode));
+    
+    /* Control sequence of operation - required mandatory attribute */
+    ESP_ERROR_CHECK(esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                                        ESP_ZB_ZCL_ATTR_THERMOSTAT_CONTROL_SEQUENCE_OF_OPERATION_ID,
+                                                        &control_sequence));
     
     /* Add running_mode attribute (shows current operating mode) */
     uint8_t running_mode = 0x00;  // Initial state: idle
@@ -896,7 +931,7 @@ static void esp_zb_task(void *pvParameters)
     
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    ESP_LOGI(TAG, "  [OK] Thermostat cluster added");
+    ESP_LOGI(TAG, "  [OK] Thermostat cluster added with REPORTING flag");
     
     /* Create Fan Control cluster */
     ESP_LOGI(TAG, "  [+] Adding Fan Control cluster (0x0202)...");
@@ -967,16 +1002,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_hvac_clusters, endpoint_config);
     ESP_LOGI(TAG, "[OK] Endpoint %d added to endpoint list", HA_ESP_HVAC_ENDPOINT);
     
-    /* Create Eco Mode Switch - Endpoint 2 */
-    ESP_LOGI(TAG, "[ECO] Creating Eco Mode switch endpoint %d...", HA_ESP_ECO_ENDPOINT);
+    /* Create Eco Mode Switch - Endpoint 2 with REPORTING flag */
+    ESP_LOGI(TAG, "[ECO] Creating Eco Mode switch endpoint %d with REPORTING flag...", HA_ESP_ECO_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_eco_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_eco_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_eco_clusters, esp_zb_eco_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t eco_on_off_cfg = {
-        .on_off = false,
-    };
-    esp_zb_attribute_list_t *esp_zb_eco_on_off_cluster = esp_zb_on_off_cluster_create(&eco_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool eco_on_off_val = false;
+    esp_zb_attribute_list_t *esp_zb_eco_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_eco_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &eco_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_eco_clusters, esp_zb_eco_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t eco_endpoint_config = {
@@ -988,16 +1027,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_eco_clusters, eco_endpoint_config);
     ESP_LOGI(TAG, "[OK] Eco Mode switch endpoint %d added", HA_ESP_ECO_ENDPOINT);
     
-    /* Create Swing Switch - Endpoint 3 */
-    ESP_LOGI(TAG, "[SWING] Creating Swing switch endpoint %d...", HA_ESP_SWING_ENDPOINT);
+    /* Create Swing Switch - Endpoint 3 with REPORTING flag */
+    ESP_LOGI(TAG, "[SWING] Creating Swing switch endpoint %d with REPORTING flag...", HA_ESP_SWING_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_swing_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_swing_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_swing_clusters, esp_zb_swing_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t swing_on_off_cfg = {
-        .on_off = false,
-    };
-    esp_zb_attribute_list_t *esp_zb_swing_on_off_cluster = esp_zb_on_off_cluster_create(&swing_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool swing_on_off_val = false;
+    esp_zb_attribute_list_t *esp_zb_swing_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_swing_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &swing_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_swing_clusters, esp_zb_swing_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t swing_endpoint_config = {
@@ -1009,16 +1052,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_swing_clusters, swing_endpoint_config);
     ESP_LOGI(TAG, "[OK] Swing switch endpoint %d added", HA_ESP_SWING_ENDPOINT);
     
-    /* Create Display Switch - Endpoint 4 */
-    ESP_LOGI(TAG, "[DISP] Creating Display switch endpoint %d...", HA_ESP_DISPLAY_ENDPOINT);
+    /* Create Display Switch - Endpoint 4 with REPORTING flag */
+    ESP_LOGI(TAG, "[DISP] Creating Display switch endpoint %d with REPORTING flag...", HA_ESP_DISPLAY_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_display_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_display_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_display_clusters, esp_zb_display_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t display_on_off_cfg = {
-        .on_off = true,  // Display defaults to ON
-    };
-    esp_zb_attribute_list_t *esp_zb_display_on_off_cluster = esp_zb_on_off_cluster_create(&display_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool display_on_off_val = true;  // Display defaults to ON
+    esp_zb_attribute_list_t *esp_zb_display_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_display_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &display_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_display_clusters, esp_zb_display_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t display_endpoint_config = {
@@ -1030,16 +1077,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_display_clusters, display_endpoint_config);
     ESP_LOGI(TAG, "[OK] Display switch endpoint %d added", HA_ESP_DISPLAY_ENDPOINT);
     
-    /* Create Night Mode Switch - Endpoint 5 */
-    ESP_LOGI(TAG, "[NIGHT] Creating Night Mode switch endpoint %d...", HA_ESP_NIGHT_ENDPOINT);
+    /* Create Night Mode Switch - Endpoint 5 with REPORTING flag */
+    ESP_LOGI(TAG, "[NIGHT] Creating Night Mode switch endpoint %d with REPORTING flag...", HA_ESP_NIGHT_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_night_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_night_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_night_clusters, esp_zb_night_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t night_on_off_cfg = {
-        .on_off = false,
-    };
-    esp_zb_attribute_list_t *esp_zb_night_on_off_cluster = esp_zb_on_off_cluster_create(&night_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool night_on_off_val = false;
+    esp_zb_attribute_list_t *esp_zb_night_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_night_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &night_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_night_clusters, esp_zb_night_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t night_endpoint_config = {
@@ -1051,16 +1102,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_night_clusters, night_endpoint_config);
     ESP_LOGI(TAG, "[OK] Night Mode switch endpoint %d added", HA_ESP_NIGHT_ENDPOINT);
     
-    /* Create Purifier Switch - Endpoint 6 */
-    ESP_LOGI(TAG, "[PURIF] Creating Purifier switch endpoint %d...", HA_ESP_PURIFIER_ENDPOINT);
+    /* Create Purifier Switch - Endpoint 6 with REPORTING flag */
+    ESP_LOGI(TAG, "[PURIF] Creating Purifier switch endpoint %d with REPORTING flag...", HA_ESP_PURIFIER_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_purifier_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_purifier_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_purifier_clusters, esp_zb_purifier_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t purifier_on_off_cfg = {
-        .on_off = false,
-    };
-    esp_zb_attribute_list_t *esp_zb_purifier_on_off_cluster = esp_zb_on_off_cluster_create(&purifier_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool purifier_on_off_val = false;
+    esp_zb_attribute_list_t *esp_zb_purifier_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_purifier_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &purifier_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_purifier_clusters, esp_zb_purifier_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t purifier_endpoint_config = {
@@ -1072,16 +1127,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_purifier_clusters, purifier_endpoint_config);
     ESP_LOGI(TAG, "[OK] Purifier switch endpoint %d added", HA_ESP_PURIFIER_ENDPOINT);
     
-    /* Create Clean Status Binary Sensor - Endpoint 7 */
-    ESP_LOGI(TAG, "[CLEAN] Creating Clean status binary sensor endpoint %d...", HA_ESP_CLEAN_ENDPOINT);
+    /* Create Clean Status Binary Sensor - Endpoint 7 with REPORTING flag (Read-Only) */
+    ESP_LOGI(TAG, "[CLEAN] Creating Clean status binary sensor endpoint %d with REPORTING flag...", HA_ESP_CLEAN_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_clean_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_clean_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_clean_clusters, esp_zb_clean_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t clean_on_off_cfg = {
-        .on_off = false,  // Clean status defaults to false (no cleaning needed)
-    };
-    esp_zb_attribute_list_t *esp_zb_clean_on_off_cluster = esp_zb_on_off_cluster_create(&clean_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag (Read-Only for binary sensor) */
+    bool clean_on_off_val = false;  // Clean status defaults to false (no cleaning needed)
+    esp_zb_attribute_list_t *esp_zb_clean_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_clean_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &clean_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_clean_clusters, esp_zb_clean_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t clean_endpoint_config = {
@@ -1093,16 +1152,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_clean_clusters, clean_endpoint_config);
     ESP_LOGI(TAG, "[OK] Clean status binary sensor endpoint %d added", HA_ESP_CLEAN_ENDPOINT);
     
-    /* Create Mute Switch - Endpoint 8 */
-    ESP_LOGI(TAG, "[MUTE] Creating Mute switch endpoint %d...", HA_ESP_MUTE_ENDPOINT);
+    /* Create Mute Switch - Endpoint 8 with REPORTING flag */
+    ESP_LOGI(TAG, "[MUTE] Creating Mute switch endpoint %d with REPORTING flag...", HA_ESP_MUTE_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_mute_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_mute_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_mute_clusters, esp_zb_mute_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t mute_on_off_cfg = {
-        .on_off = false,  // Mute defaults to OFF
-    };
-    esp_zb_attribute_list_t *esp_zb_mute_on_off_cluster = esp_zb_on_off_cluster_create(&mute_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag */
+    bool mute_on_off_val = false;  // Mute defaults to OFF
+    esp_zb_attribute_list_t *esp_zb_mute_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_mute_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &mute_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_mute_clusters, esp_zb_mute_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t mute_endpoint_config = {
@@ -1114,16 +1177,20 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_mute_clusters, mute_endpoint_config);
     ESP_LOGI(TAG, "[OK] Mute switch endpoint %d added", HA_ESP_MUTE_ENDPOINT);
     
-    /* Create Error Status Binary Sensor - Endpoint 9 */
-    ESP_LOGI(TAG, "[ERROR] Creating Error status binary sensor endpoint %d...", HA_ESP_ERROR_ENDPOINT);
+    /* Create Error Status Binary Sensor - Endpoint 9 with REPORTING flag (Read-Only) */
+    ESP_LOGI(TAG, "[ERROR] Creating Error status binary sensor endpoint %d with REPORTING flag...", HA_ESP_ERROR_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_error_clusters = esp_zb_zcl_cluster_list_create();
     esp_zb_attribute_list_t *esp_zb_error_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_error_clusters, esp_zb_error_basic_cluster,
                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
-    esp_zb_on_off_cluster_cfg_t error_on_off_cfg = {
-        .on_off = false,  // Error status defaults to false (no error)
-    };
-    esp_zb_attribute_list_t *esp_zb_error_on_off_cluster = esp_zb_on_off_cluster_create(&error_on_off_cfg);
+    
+    /* Create On/Off cluster with REPORTING flag (Read-Only for binary sensor) */
+    bool error_on_off_val = false;  // Error status defaults to false (no error)
+    esp_zb_attribute_list_t *esp_zb_error_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_error_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &error_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_error_clusters, esp_zb_error_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     esp_zb_endpoint_config_t error_endpoint_config = {
@@ -1199,6 +1266,97 @@ static void esp_zb_task(void *pvParameters)
     ESP_LOGI(TAG, "[REG] Registering Zigbee device...");
     esp_zb_device_register(esp_zb_ep_list);
     ESP_LOGI(TAG, "[OK] Device registered");
+    
+    /* Debug: Verify REPORTING flag is set on thermostat attributes */
+    ESP_LOGI(TAG, "🔍 Verifying REPORTING flag on thermostat attributes...");
+    esp_zb_zcl_attr_t *attr;
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Local Temperature: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Cooling Setpoint: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Heating Setpoint: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  System Mode: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    /* Debug: Verify REPORTING flag on all on/off switch endpoints */
+    ESP_LOGI(TAG, "🔍 Verifying REPORTING flag on on/off switch endpoints...");
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Eco Mode: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_SWING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Swing: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_DISPLAY_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Display: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_NIGHT_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Night Mode: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_PURIFIER_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Purifier: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_CLEAN_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Clean Status: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_MUTE_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Mute: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
+    
+    attr = esp_zb_zcl_get_attribute(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID);
+    if (attr) {
+        ESP_LOGI(TAG, "  Error Status: access=0x%02x %s", attr->access,
+                 (attr->access & ESP_ZB_ZCL_ATTR_ACCESS_REPORTING) ? "✅ REPORTING" : "❌ NO REPORTING");
+    }
     
     ESP_LOGI(TAG, "[REG] Registering action handler...");
     esp_zb_core_action_handler_register(zb_action_handler);
