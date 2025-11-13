@@ -48,8 +48,8 @@ See the documentation files for advanced features, troubleshooting, and hardware
 The PCB has been tested for a couple of weeks now on 4 units and is working well.
 I am using a Seeedstudio Xiao ESP32-C6 with a custom buck converter (based on a MPS MP1584) and a level shifter for TX/RX (using a Texas Instrument TXB0102)
 ![ACW02-ZB Render](./PCB/acw02_zb.jpg)
-![ACW02-ZB](./PCB/ACW02_zb-Solered1.jpg)
-![ACW02-ZB](./PCB/ACW02_zb-Solered2.jpg)
+![ACW02-ZB](./PCB/ACW02_zb-Soldered1.jpg)
+![ACW02-ZB](./PCB/ACW02_zb-Soldered2.jpg)
 
 PCB is small, 48mm x 27mm so there is no problem to fit it inside the unit.
 ---
