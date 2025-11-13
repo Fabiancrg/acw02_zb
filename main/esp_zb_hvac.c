@@ -25,6 +25,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "freertos/timers.h"
+#include <math.h>
 
 
 #if !defined ZB_ROUTER_ROLE
@@ -786,7 +787,7 @@ static void hvac_periodic_update(uint8_t param)
         ESP_LOGI(TAG, "[POLL] Target temp changed: %d -> %d°C", previous_state.target_temp_c, current_state.target_temp_c);
         state_changed = true;
     }
-    if (abs(current_state.ambient_temp_c - previous_state.ambient_temp_c) >= 0.5f) {
+    if (fabsf(current_state.ambient_temp_c - previous_state.ambient_temp_c) >= 0.5f) {
         ESP_LOGI(TAG, "[POLL] Ambient temp changed: %.1f -> %.1f°C", previous_state.ambient_temp_c, current_state.ambient_temp_c);
         state_changed = true;
     }
