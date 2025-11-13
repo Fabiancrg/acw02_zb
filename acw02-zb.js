@@ -3,11 +3,19 @@
  * 
  * This file defines the device for Zigbee2MQTT to properly expose all controls.
  * 
+ * REPORTING FLAG OPTIMIZATION:
+ * - Device uses ESP_ZB_ZCL_ATTR_ACCESS_REPORTING flag for automatic attribute reporting
+ * - Temperature, setpoints, system_mode, and all switches now auto-report on changes
+ * - Minimal polling only for attributes ESP-Zigbee stack cannot auto-report:
+ *   * runningMode (Zigbee stack limitation)
+ *   * fanMode (not in standard reportable attributes)
+ *   * error_text (locationDesc - not typically reportable)
+ * 
  * Installation:
  * 1. Copy this file to your Zigbee2MQTT data directory (e.g., /opt/zigbee2mqtt/data/)
  * 2. Edit your Zigbee2MQTT configuration.yaml and add:
  *    external_converters:
- *      - zigbee2mqtt_converter.js
+ *      - acw02-zb.js
  * 3. Restart Zigbee2MQTT
  * 4. Re-pair the device or click "Reconfigure" in the Z2M UI
  */
@@ -242,7 +250,7 @@ const definition = {
         };
     },
     
-    // Configure reporting
+    // Configure reporting - with REPORTING flag, most attributes auto-report!
     configure: async (device, coordinatorEndpoint, logger) => {
         const endpoint1 = device.getEndpoint(1);
         const endpoint2 = device.getEndpoint(2);
@@ -261,58 +269,56 @@ const definition = {
             'hvacFanCtrl',
         ]);
         
-        // Configure reporting for thermostat attributes
-        // localTemp (current temperature) is reportable
-        await reporting.thermostatTemperature(endpoint1);
+        // Configure reporting for thermostat attributes (with REPORTING flag, these auto-report!)
+        await reporting.thermostatTemperature(endpoint1);  // localTemp
+        await reporting.thermostatOccupiedHeatingSetpoint(endpoint1);  // setpoint
         
-        // Note: runningMode (0x001E) is NOT reportable - we poll it instead
+        // Configure systemMode reporting (0x001C)
+        await endpoint1.configureReporting('hvacThermostat', [{
+            attribute: 'systemMode',
+            minimumReportInterval: 1,
+            maximumReportInterval: 300,
+            reportableChange: 1,
+        }]);
         
-        // Bind on/off cluster for switches (endpoints 2-8)
-        // and fanMode are NOT reportable attributes in ESP-Zigbee stack
-        // Z2M will poll these when needed or they can be read manually
+        // Note: runningMode (0x001E) is NOT auto-reportable by ESP-Zigbee stack - we poll it
         
-        // Bind and configure endpoint 2 (Eco mode)
+        // Bind and configure on/off switches (endpoints 2-8) - with REPORTING flag, these auto-report!
         await reporting.bind(endpoint2, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint2);
+        await reporting.onOff(endpoint2);  // Eco mode
         
-        // Bind and configure endpoint 3 (Swing)
         await reporting.bind(endpoint3, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint3);
+        await reporting.onOff(endpoint3);  // Swing
         
-        // Bind and configure endpoint 4 (Display)
         await reporting.bind(endpoint4, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint4);
+        await reporting.onOff(endpoint4);  // Display
         
-        // Bind and configure endpoint 5 (Night mode)
         await reporting.bind(endpoint5, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint5);
+        await reporting.onOff(endpoint5);  // Night mode
         
-        // Bind and configure endpoint 6 (Purifier)
         await reporting.bind(endpoint6, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint6);
+        await reporting.onOff(endpoint6);  // Purifier
         
-        // Bind and configure endpoint 7 (Clean status - read-only)
         await reporting.bind(endpoint7, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint7);
+        await reporting.onOff(endpoint7);  // Clean status (read-only)
         
-        // Bind and configure endpoint 8 (Mute)
         await reporting.bind(endpoint8, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint8);
+        await reporting.onOff(endpoint8);  // Mute
         
-        // Bind and configure endpoint 9 (Error status - read-only)
         await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
-        await reporting.onOff(endpoint9);
+        await reporting.onOff(endpoint9);  // Error status (read-only)
         
-        // Initial read of unreportable attributes
+        // Initial read of unreportable attributes (only the ones we need to poll)
         try {
-            await endpoint1.read('hvacThermostat', ['runningMode', 'systemMode']);
-            await endpoint1.read('genBasic', ['locationDesc']);
+            await endpoint1.read('hvacThermostat', ['runningMode']);  // Not auto-reportable
+            await endpoint1.read('genBasic', ['locationDesc']);  // Error text
+            await endpoint1.read('hvacFanCtrl', ['fanMode']);  // Not auto-reportable
         } catch (error) {
-            // Ignore errors on initial read
+            logger.warn(`ACW02 configure: Initial read failed: ${error.message}`);
         }
     },
     
-    // Use modern polling extend instead of onEvent
+    // Minimal polling for truly unreportable attributes only (with REPORTING flag, most attributes now auto-report!)
     extend: [
         m.poll({
             key: "acw02_state",
@@ -320,75 +326,40 @@ const definition = {
                 .numeric("acw02_poll_interval", ea.SET)
                 .withValueMin(-1)
                 .withDescription(
-                    "ACW02 HVAC does not support reporting for some attributes (runningMode, systemMode, fanMode, errorText) so they are polled instead. Default is 60 seconds, set to -1 to disable."
+                    "ACW02 HVAC minimal polling for attributes that ESP-Zigbee stack cannot auto-report (runningMode, fanMode, errorText). Default is 60 seconds. Most attributes now auto-report via REPORTING flag! Set to -1 to disable."
                 ),
-            defaultIntervalSeconds: 60,
+            defaultIntervalSeconds: 60,  // Can be increased since most things now auto-report
             poll: async (device) => {
-                // Use console.log since logger is not available in modern extend poll context
-                console.log(`ACW02 POLLING TRIGGERED for ${device.ieeeAddr}`);
-                
                 const endpoint1 = device.getEndpoint(1);
                 if (!endpoint1) {
                     console.warn(`ACW02 polling: endpoint 1 not found`);
                     return;
                 }
                 
-                // Poll unreportable thermostat attributes
+                // Poll ONLY the truly unreportable attributes
                 try {
-                    console.log(`ACW02 polling: Reading hvacThermostat attributes...`);
-                    await endpoint1.read('hvacThermostat', [
-                        'runningMode',
-                        'systemMode',
-                        'occupiedHeatingSetpoint',
-                    ]);
-                    console.log(`ACW02 polling: hvacThermostat read successful`);
+                    // runningMode - ESP-Zigbee stack limitation, cannot auto-report
+                    await endpoint1.read('hvacThermostat', ['runningMode']);
                 } catch (error) {
-                    console.error(`ACW02 polling: hvacThermostat read failed: ${error.message}`);
+                    console.error(`ACW02 polling: runningMode read failed: ${error.message}`);
                 }
                 
-                // Poll error text from locationDescription
                 try {
-                    console.log(`ACW02 polling: Reading genBasic locationDesc...`);
-                    await endpoint1.read('genBasic', ['locationDesc']);
-                    console.log(`ACW02 polling: genBasic read successful`);
-                } catch (error) {
-                    console.error(`ACW02 polling: genBasic read failed: ${error.message}`);
-                }
-                
-                // Poll fan mode (unreportable attribute)
-                try {
-                    console.log(`ACW02 polling: Reading hvacFanCtrl fanMode...`);
+                    // fanMode - Not in standard reportable attributes
                     await endpoint1.read('hvacFanCtrl', ['fanMode']);
-                    console.log(`ACW02 polling: hvacFanCtrl read successful`);
                 } catch (error) {
-                    console.error(`ACW02 polling: hvacFanCtrl read failed: ${error.message}`);
+                    console.error(`ACW02 polling: fanMode read failed: ${error.message}`);
                 }
                 
-                // Poll clean status (endpoint 7)
                 try {
-                    console.log(`ACW02 polling: Reading clean status...`);
-                    const endpoint7 = device.getEndpoint(7);
-                    if (endpoint7) {
-                        await endpoint7.read('genOnOff', ['onOff']);
-                        console.log(`ACW02 polling: clean status read successful`);
-                    }
+                    // error_text (locationDesc) - Not typically reportable
+                    await endpoint1.read('genBasic', ['locationDesc']);
                 } catch (error) {
-                    console.error(`ACW02 polling: clean status read failed: ${error.message}`);
+                    console.error(`ACW02 polling: error_text read failed: ${error.message}`);
                 }
                 
-                // Poll error status (endpoint 9)
-                try {
-                    console.log(`ACW02 polling: Reading error status...`);
-                    const endpoint9 = device.getEndpoint(9);
-                    if (endpoint9) {
-                        await endpoint9.read('genOnOff', ['onOff']);
-                        console.log(`ACW02 polling: error status read successful`);
-                    }
-                } catch (error) {
-                    console.error(`ACW02 polling: error status read failed: ${error.message}`);
-                }
-                
-                console.log(`ACW02 POLLING COMPLETED for ${device.ieeeAddr}`);
+                // Note: All other attributes (temperature, setpoints, system_mode, all switches)
+                // now auto-report via REPORTING flag - no polling needed!
             },
         }),
     ],

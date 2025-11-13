@@ -33,8 +33,8 @@
 
 static const char *TAG = "HVAC_ZIGBEE";
 
-/* HVAC state update interval */
-#define HVAC_UPDATE_INTERVAL_MS     30000  // 30 seconds
+/* HVAC state polling interval - detects physical remote changes, event-driven logic prevents unnecessary Zigbee traffic */
+#define HVAC_UPDATE_INTERVAL_MS     30000  // 30 seconds (near real-time for physical remote detection)
 
 /* Boot button configuration for factory reset */
 #define BOOT_BUTTON_GPIO            GPIO_NUM_9
@@ -748,26 +748,108 @@ static void hvac_update_zigbee_attributes(uint8_t param)
 
 static void hvac_periodic_update(uint8_t param)
 {
-    /* Request fresh status from HVAC unit */
+    static hvac_state_t previous_state = {0};
+    static bool first_run = true;
+    hvac_state_t current_state;
+    
+    /* Request fresh status from HVAC unit via UART */
     hvac_request_status();
     
-    /* Update Zigbee attributes */
-    hvac_update_zigbee_attributes(0);
+    /* Get current state */
+    esp_err_t ret = hvac_get_state(&current_state);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "[POLL] Failed to get HVAC state");
+        goto schedule_next;
+    }
     
-    /* Send keepalive to HVAC */
+    /* On first run, always update to sync initial state */
+    if (first_run) {
+        ESP_LOGI(TAG, "[POLL] First run - syncing initial state to Zigbee");
+        hvac_update_zigbee_attributes(0);
+        memcpy(&previous_state, &current_state, sizeof(hvac_state_t));
+        first_run = false;
+        goto schedule_next;
+    }
+    
+    /* Check if any state has changed */
+    bool state_changed = false;
+    
+    if (current_state.power_on != previous_state.power_on) {
+        ESP_LOGI(TAG, "[POLL] Power changed: %d -> %d", previous_state.power_on, current_state.power_on);
+        state_changed = true;
+    }
+    if (current_state.mode != previous_state.mode) {
+        ESP_LOGI(TAG, "[POLL] Mode changed: %d -> %d", previous_state.mode, current_state.mode);
+        state_changed = true;
+    }
+    if (current_state.target_temp_c != previous_state.target_temp_c) {
+        ESP_LOGI(TAG, "[POLL] Target temp changed: %d -> %d°C", previous_state.target_temp_c, current_state.target_temp_c);
+        state_changed = true;
+    }
+    if (abs(current_state.ambient_temp_c - previous_state.ambient_temp_c) >= 0.5f) {
+        ESP_LOGI(TAG, "[POLL] Ambient temp changed: %.1f -> %.1f°C", previous_state.ambient_temp_c, current_state.ambient_temp_c);
+        state_changed = true;
+    }
+    if (current_state.fan_speed != previous_state.fan_speed) {
+        ESP_LOGI(TAG, "[POLL] Fan speed changed: %d -> %d", previous_state.fan_speed, current_state.fan_speed);
+        state_changed = true;
+    }
+    if (current_state.eco_mode != previous_state.eco_mode) {
+        ESP_LOGI(TAG, "[POLL] Eco mode changed: %d -> %d", previous_state.eco_mode, current_state.eco_mode);
+        state_changed = true;
+    }
+    if (current_state.swing_on != previous_state.swing_on) {
+        ESP_LOGI(TAG, "[POLL] Swing changed: %d -> %d", previous_state.swing_on, current_state.swing_on);
+        state_changed = true;
+    }
+    if (current_state.display_on != previous_state.display_on) {
+        ESP_LOGI(TAG, "[POLL] Display changed: %d -> %d", previous_state.display_on, current_state.display_on);
+        state_changed = true;
+    }
+    if (current_state.night_mode != previous_state.night_mode) {
+        ESP_LOGI(TAG, "[POLL] Night mode changed: %d -> %d", previous_state.night_mode, current_state.night_mode);
+        state_changed = true;
+    }
+    if (current_state.purifier_on != previous_state.purifier_on) {
+        ESP_LOGI(TAG, "[POLL] Purifier changed: %d -> %d", previous_state.purifier_on, current_state.purifier_on);
+        state_changed = true;
+    }
+    if (current_state.clean_status != previous_state.clean_status) {
+        ESP_LOGI(TAG, "[POLL] Clean status changed: %d -> %d", previous_state.clean_status, current_state.clean_status);
+        state_changed = true;
+    }
+    if (current_state.mute_on != previous_state.mute_on) {
+        ESP_LOGI(TAG, "[POLL] Mute changed: %d -> %d", previous_state.mute_on, current_state.mute_on);
+        state_changed = true;
+    }
+    if (strcmp(current_state.error_text, previous_state.error_text) != 0) {
+        ESP_LOGI(TAG, "[POLL] Error text changed: '%s' -> '%s'", previous_state.error_text, current_state.error_text);
+        state_changed = true;
+    }
+    
+    /* Only update Zigbee if state changed - let REPORTING handle automatic updates */
+    if (state_changed) {
+        ESP_LOGI(TAG, "[POLL] State changed - updating Zigbee attributes (REPORTING will auto-send)");
+        hvac_update_zigbee_attributes(0);
+        memcpy(&previous_state, &current_state, sizeof(hvac_state_t));
+    } else {
+        ESP_LOGD(TAG, "[POLL] No state changes detected - skipping Zigbee update");
+    }
+    
+schedule_next:
+    /* Send keepalive to HVAC (required to maintain UART connection) */
     hvac_send_keepalive();
     
-    /* Log current Zigbee TX power for monitoring (every 30s with HVAC updates) */
+    /* Log Zigbee TX power every hour for monitoring */
     static uint8_t log_counter = 0;
-    if (++log_counter >= 10) {  // Log every ~5 minutes (10 * 30s)
+    if (++log_counter >= 120) {  // Log every ~1 hour (120 * 30 seconds)
         int8_t tx_power = 0;
         esp_zb_get_tx_power(&tx_power);
         ESP_LOGI(TAG, "[RF] Zigbee TX power: %d dBm", tx_power);
-        /* Note: RX RSSI/LQI is logged per-message in attribute handler */
         log_counter = 0;
     }
     
-    /* Schedule next update */
+    /* Schedule next poll in 30 seconds - event-driven logic prevents unnecessary Zigbee traffic */
     esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_periodic_update, 0, HVAC_UPDATE_INTERVAL_MS);
 }
 
