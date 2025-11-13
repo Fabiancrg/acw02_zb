@@ -11,24 +11,24 @@
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/Hardware-CC%20BY--NC--SA%204.0-green.svg)](./LICENSE-hardware)
 
 # Project Description
-ACW02-ZB is an open-source Zigbee-enabled HVAC controller for the AIRTON (to replace ACW02 WiFi module) series and compatible units. It allows full integration with Zigbee2MQTT, Home Assistant, and other Zigbee ecosystems, providing remote control, monitoring, and diagnostics for air conditioning systems.
+ACW02-ZB is an open-source Zigbee-enabled HVAC controller for the Airton (to replace ACW02 WiFi module) series and compatible units. It allows full integration with Zigbee2MQTT, Home Assistant, and other Zigbee ecosystems, providing remote control, monitoring, and diagnostics for air conditioning systems.
 
 ### Key Features
 - **Zigbee 3.0 End Device**: Compatible with ESP32-C6 and ESP32-H2
 - **Full HVAC Control**: Supports on/off, mode, setpoints, fan speed, swing, eco, night, mute, and display
-- **Error Diagnostics**: Exposes AC error codes and status via Zigbee attributes (!!! Feature not yet validated)
+- **Error Diagnostics**: Exposes AC error codes and status via Zigbee attributes (Only one cade currently)
 - **Automatic Polling**: Uses Z2M's generic polling framework for unreportable attributes
 - **Auto-Rejoin**: Device automatically rejoins Zigbee network after removal or network loss
 - **Clean Entity Names**: Optimized for Home Assistant and Zigbee2mqtt UI
 - **Factory Reset**: Long-press boot button 5s for full reset
-- **Open Hardware**: PCB and schematic files will be included
+- **Open Hardware**: PCB and schematic files included (Using Seeedstudio Xiao ESP32-C6)
 
 ### Architecture
 - **Firmware**: ESP-IDF C code for Zigbee stack, HVAC protocol, and attribute mapping
 - **External Converter**: Custom Zigbee2MQTT JS converter for multi-endpoint mapping and polling
 
 ### Typical Use Cases
-- Integrate AIRTON (to replace ACW02 WiFi module) with Home Assistant via Zigbee2MQTT
+- Integrate Airton (to replace ACW02 WiFi module) with Home Assistant via Zigbee2MQTT
 - Monitor and control HVAC remotely (mode, temperature, fan, swing, eco, etc.)
 - Receive error codes and filter status for maintenance
 - Automatic recovery from network disruptions
@@ -45,10 +45,13 @@ See the documentation files for advanced features, troubleshooting, and hardware
 
 ## PCB
 
-The PCB has been created and ordered with the parts, as soon as it is tested I will add more info about it.
-I am using a Seeedstudio ESP32-C6 with a custom buck converter (based on a MPS MP1584) and a level shifter for TX/RX (using a Texas Instrument TXB0102)
+The PCB has been tested for a couple of weeks now on 4 units and is working well.
+I am using a Seeedstudio Xiao ESP32-C6 with a custom buck converter (based on a MPS MP1584) and a level shifter for TX/RX (using a Texas Instrument TXB0102)
 ![ACW02-ZB Render](./PCB/acw02_zb.jpg)
+![ACW02-ZB](./PCB/ACW02_zb-Solered1.jpg)
+![ACW02-ZB](./PCB/ACW02_zb-Solered2.jpg)
 
+PCB is small, 48mm x 27mm so there is no problem to fit it inside the unit.
 ---
 
 ## 🙌 Credits
