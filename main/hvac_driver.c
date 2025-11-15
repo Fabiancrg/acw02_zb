@@ -156,6 +156,11 @@ static uint8_t rx_buffer[HVAC_UART_BUF_SIZE];
 static size_t rx_buffer_len = 0;
 static uint32_t last_rx_time = 0;
 
+/* Delayed NVS write to reduce flash wear */
+static TimerHandle_t nvs_save_timer = NULL;
+static bool nvs_save_pending = false;
+#define NVS_SAVE_DELAY_MS  900000  // 900 seconds - write to flash once per 15 minutes max
+
 /* Keepalive frame */
 static const uint8_t keepalive_frame[] = {
     0x7A, 0x7A, 0x21, 0xD5, 0x0C, 0x00, 0x00, 0xAB,
@@ -183,6 +188,8 @@ static esp_err_t hvac_send_frame(const uint8_t *data, size_t len);
 static esp_err_t hvac_build_and_send_command(void);
 static void hvac_decode_state(const uint8_t *frame, size_t len);
 static void hvac_rx_task(void *arg);
+static esp_err_t hvac_save_settings_immediate(void);  // Actual NVS write
+static void nvs_save_timer_callback(TimerHandle_t xTimer);  // Delayed write callback
 
 /**
  * @brief Calculate CRC16 for HVAC frames
@@ -486,12 +493,25 @@ static void hvac_rx_task(void *arg)
     static const size_t NUM_VALID_SIZES = sizeof(VALID_SIZES) / sizeof(VALID_SIZES[0]);
     
     while (1) {
+        // Safety check: ensure buffer has space
+        size_t space_available = HVAC_UART_BUF_SIZE - rx_buffer_len;
+        if (space_available < 34) {  // Need at least space for largest frame
+            ESP_LOGW(TAG, "HVAC RX buffer nearly full, resetting");
+            rx_buffer_len = 0;
+            space_available = HVAC_UART_BUF_SIZE;
+        }
+        
         int len = uart_read_bytes(HVAC_UART_NUM, rx_buffer + rx_buffer_len, 
-                                  HVAC_UART_BUF_SIZE - rx_buffer_len, 20 / portTICK_PERIOD_MS);
+                                  space_available, 20 / portTICK_PERIOD_MS);
         
         if (len > 0) {
             rx_buffer_len += len;
             last_rx_time = xTaskGetTickCount();
+        } else if (len < 0) {
+            // UART error occurred
+            ESP_LOGE(TAG, "HVAC UART read error: %d", len);
+            uart_flush_input(HVAC_UART_NUM);
+            rx_buffer_len = 0;
         }
         
         // Process buffer if we have data and silence period
@@ -535,6 +555,12 @@ static void hvac_rx_task(void *arg)
                 memmove(rx_buffer, rx_buffer + offset, rx_buffer_len - offset);
                 rx_buffer_len -= offset;
             }
+            
+            // Additional safety: prevent buffer overflow
+            if (rx_buffer_len > HVAC_UART_BUF_SIZE - 64) {
+                ESP_LOGW(TAG, "HVAC RX buffer unexpectedly full (%zu bytes), resetting", rx_buffer_len);
+                rx_buffer_len = 0;
+            }
         }
         
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -542,9 +568,21 @@ static void hvac_rx_task(void *arg)
 }
 
 /**
- * @brief Save HVAC settings to NVS (Non-Volatile Storage)
+ * @brief Timer callback for delayed NVS save
  */
-static esp_err_t hvac_save_settings(void)
+static void nvs_save_timer_callback(TimerHandle_t xTimer)
+{
+    if (nvs_save_pending) {
+        ESP_LOGI(TAG, "Performing delayed NVS save...");
+        hvac_save_settings_immediate();
+        nvs_save_pending = false;
+    }
+}
+
+/**
+ * @brief Save HVAC settings to NVS immediately (internal function)
+ */
+static esp_err_t hvac_save_settings_immediate(void)
 {
     nvs_handle_t nvs_handle;
     esp_err_t err;
@@ -578,6 +616,44 @@ static esp_err_t hvac_save_settings(void)
     
     nvs_close(nvs_handle);
     return err;
+}
+
+/**
+ * @brief Schedule delayed save to NVS (reduces flash wear)
+ * 
+ * This function marks settings as pending and starts/resets a timer.
+ * The actual write to NVS happens after NVS_SAVE_DELAY_MS milliseconds
+ * of no further changes, reducing flash wear significantly.
+ */
+static esp_err_t hvac_save_settings(void)
+{
+    // Mark that we have pending changes
+    nvs_save_pending = true;
+    
+    // Create timer on first use
+    if (nvs_save_timer == NULL) {
+        nvs_save_timer = xTimerCreate(
+            "nvs_save",
+            pdMS_TO_TICKS(NVS_SAVE_DELAY_MS),
+            pdFALSE,  // One-shot timer
+            NULL,
+            nvs_save_timer_callback
+        );
+        
+        if (nvs_save_timer == NULL) {
+            ESP_LOGE(TAG, "Failed to create NVS save timer, saving immediately");
+            return hvac_save_settings_immediate();
+        }
+    }
+    
+    // Reset timer - this delays the write if settings keep changing
+    if (xTimerReset(nvs_save_timer, pdMS_TO_TICKS(100)) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to reset NVS save timer, saving immediately");
+        return hvac_save_settings_immediate();
+    }
+    
+    ESP_LOGD(TAG, "NVS save scheduled in %d seconds", NVS_SAVE_DELAY_MS / 1000);
+    return ESP_OK;
 }
 
 /**
@@ -698,6 +774,9 @@ esp_err_t hvac_driver_init(void)
     // Load saved settings from NVS
     ESP_LOGI(TAG, "[HVAC] Loading saved settings from NVS");
     hvac_load_settings();
+    
+    // Flush any pending NVS saves from previous session (shouldn't be any, but safety)
+    nvs_save_pending = false;
     
     ESP_LOGI(TAG, "[OK] HVAC driver initialized successfully");
     

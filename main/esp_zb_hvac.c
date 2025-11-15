@@ -95,12 +95,16 @@ static void button_task(void *arg)
     TickType_t press_start_time = 0;
     bool long_press_triggered = false;
     const TickType_t LONG_PRESS_DURATION = pdMS_TO_TICKS(BUTTON_LONG_PRESS_TIME_MS);
+    const TickType_t DEBOUNCE_TIME = pdMS_TO_TICKS(50);  // 50ms debounce
     
     ESP_LOGI(TAG, "[BUTTON] Task started - waiting for button events");
     
     for (;;) {
         // Wait for button interrupt
         if (xQueueReceive(button_evt_queue, &io_num, portMAX_DELAY)) {
+            // Debounce delay
+            vTaskDelay(DEBOUNCE_TIME);
+            
             // Disable interrupts during handling
             gpio_intr_disable(BOOT_BUTTON_GPIO);
             
@@ -112,8 +116,11 @@ static void button_task(void *arg)
                 long_press_triggered = false;
                 ESP_LOGI(TAG, "[BUTTON] Pressed - hold 5 sec for factory reset");
                 
-                // Wait while button is held
-                while (gpio_get_level(BOOT_BUTTON_GPIO) == 0) {
+                // Wait while button is held with timeout to prevent infinite loop
+                TickType_t poll_count = 0;
+                const TickType_t MAX_POLL_TIME = pdMS_TO_TICKS(10000);  // 10s max
+                
+                while (gpio_get_level(BOOT_BUTTON_GPIO) == 0 && poll_count < MAX_POLL_TIME) {
                     TickType_t current_time = xTaskGetTickCount();
                     if ((current_time - press_start_time) >= LONG_PRESS_DURATION && !long_press_triggered) {
                         long_press_triggered = true;
@@ -122,6 +129,7 @@ static void button_task(void *arg)
                         esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
                     }
                     vTaskDelay(pdMS_TO_TICKS(100));
+                    poll_count += pdMS_TO_TICKS(100);
                 }
                 
                 // Button released
@@ -131,7 +139,8 @@ static void button_task(void *arg)
                 }
             }
             
-            // Re-enable interrupts
+            // Re-enable interrupts after debounce
+            vTaskDelay(DEBOUNCE_TIME);
             gpio_intr_enable(BOOT_BUTTON_GPIO);
         }
     }
@@ -1529,8 +1538,13 @@ void ota_validation_start(void)
                 validation_timer_callback
             );
             if (validation_timer != NULL) {
-                xTimerStart(validation_timer, 0);
-                ESP_LOGI(OTA_VALIDATION_TAG, "Validation timer started");
+                if (xTimerStart(validation_timer, 0) == pdPASS) {
+                    ESP_LOGI(OTA_VALIDATION_TAG, "Validation timer started");
+                } else {
+                    ESP_LOGE(OTA_VALIDATION_TAG, "Failed to start validation timer!");
+                    xTimerDelete(validation_timer, 0);
+                    validation_timer = NULL;
+                }
             } else {
                 ESP_LOGE(OTA_VALIDATION_TAG, "Failed to create validation timer!");
             }
@@ -1581,10 +1595,12 @@ static void check_validation_complete(void)
         uint32_t elapsed = (xTaskGetTickCount() * portTICK_PERIOD_MS) - validation.validation_start_time;
         ESP_LOGI(OTA_VALIDATION_TAG, "All validation checks passed in %lu ms!", elapsed);
         
-        // Stop the timer
-        xTimerStop(validation_timer, 0);
-        xTimerDelete(validation_timer, 0);
-        validation_timer = NULL;
+        // Stop and delete the timer
+        if (validation_timer != NULL) {
+            xTimerStop(validation_timer, 0);
+            xTimerDelete(validation_timer, 0);
+            validation_timer = NULL;
+        }
         
         // Mark firmware as valid
         esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
@@ -1593,8 +1609,6 @@ static void check_validation_complete(void)
         } else {
             ESP_LOGE(OTA_VALIDATION_TAG, "Failed to mark firmware as valid: %s", esp_err_to_name(err));
         }
-        xTimerDelete(validation_timer, 0);
-        validation_timer = NULL;
     }
 }
 void ota_validation_mark_invalid(void)
