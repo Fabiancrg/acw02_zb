@@ -6,4 +6,9 @@ CodeToReusePartially
 backup/
 doc/
 join.log
+PCB/acw02_zb-v1.1/acw02_zb-v1.1-backups
+PCB/acw02_zb-v1.1/~*
+PCB/acw02_zb-v1.1/#*
+PCB/acw02_zb-v1.1/_*
+PCB/acw02_zb-v1.1/fp-info-cache
 
