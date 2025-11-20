@@ -1,0 +1,6 @@
+Front (top side) placement file: 'C:\Users\fabia\My Drive\Devel\KiCAD\Project\acw02_zb\JLPCB\acw02_zb-top-pos.csv'.
+Info: Component count: 22.
+Back (bottom side) placement file: 'C:\Users\fabia\My Drive\Devel\KiCAD\Project\acw02_zb\JLPCB\acw02_zb-bottom-pos.csv'.
+Info: Component count: 0.
+Info: Full component count: 22.
+Info: Done.
