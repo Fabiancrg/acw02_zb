@@ -11,13 +11,6 @@
  *   * fanMode (not in standard reportable attributes)
  *   * error_text (locationDesc - not typically reportable)
  * 
- * Installation:
- * 1. Copy this file to your Zigbee2MQTT data directory (e.g., /opt/zigbee2mqtt/data/)
- * 2. Edit your Zigbee2MQTT configuration.yaml and add:
- *    external_converters:
- *      - acw02-zb.js
- * 3. Restart Zigbee2MQTT
- * 4. Re-pair the device or click "Reconfigure" in the Z2M UI
  */
 
 const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
@@ -72,9 +65,7 @@ const fzLocal = {
                     0x06: 'quiet',    // SILENT
                     0x0D: 'quiet',    // TURBO (map to quiet for now)
                 };
-                const result = {fan_mode: fanModeMap[msg.data.fanMode]};
-                meta.logger.info(`ACW02 fz.fan_mode: type=${msg.type}, fanMode=0x${msg.data.fanMode.toString(16)} -> ${result.fan_mode}`);
-                return result;
+                return {fan_mode: fanModeMap[msg.data.fanMode]};
             }
         },
     },
@@ -86,7 +77,6 @@ const fzLocal = {
         convert: (model, msg, publish, options, meta) => {
             if (msg.endpoint.ID === 7 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
-                meta.logger.info(`ACW02 fz.clean_status: Filter cleaning status: ${state}`);
                 return {filter_clean_status: state};
             }
         },
@@ -99,7 +89,6 @@ const fzLocal = {
         convert: (model, msg, publish, options, meta) => {
             if (msg.endpoint.ID === 9 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
-                meta.logger.info(`ACW02 fz.error_status: Error status: ${state}`);
                 return {ac_error_status: state};
             }
         },
@@ -110,31 +99,19 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             if (msg.endpoint.ID === 1 && msg.data['locationDesc'] !== undefined) {
-                meta.logger.debug(`ACW02 fz.error_text: Raw locationDesc data type: ${typeof msg.data['locationDesc']}, value: ${JSON.stringify(msg.data['locationDesc'])}`);
-                
                 let errorText = '';
                 const locationDesc = msg.data['locationDesc'];
                 
                 if (typeof locationDesc === 'string') {
-                    // ESP32 is sending string directly
                     errorText = locationDesc;
-                    meta.logger.info(`ACW02 fz.error_text: Received string directly: "${errorText}"`);
                 } else if (locationDesc && Array.isArray(locationDesc) && locationDesc.length > 0) {
                     // Zigbee string format: first byte is length, rest is text
                     const textLength = locationDesc[0];
                     const textData = locationDesc.slice(1, 1 + textLength);
                     errorText = String.fromCharCode.apply(null, textData);
-                    meta.logger.info(`ACW02 fz.error_text: Decoded from bytes: "${errorText}"`);
                 }
                 
-                // Check if there's an error (non-empty text)
-                if (errorText && errorText.trim() !== '') {
-                    // Return the actual error text
-                    return {error_text: errorText};
-                } else {
-                    // No error
-                    return {error_text: ''};
-                }
+                return {error_text: errorText.trim()};
             }
         },
     },
@@ -156,7 +133,6 @@ const fzLocal = {
                     0x07: 'fan_only',
                 };
                 result.running_state = modeMap[msg.data.runningMode] || 'idle';
-                meta.logger.info(`ACW02 fz.thermostat: runningMode=0x${msg.data.runningMode.toString(16)} -> ${result.running_state}`);
             }
             if (msg.data.hasOwnProperty('systemMode')) {
                 const sysModeMap = {
@@ -168,17 +144,12 @@ const fzLocal = {
                     0x08: 'dry',
                 };
                 result.system_mode = sysModeMap[msg.data.systemMode] || 'off';
-                meta.logger.info(`ACW02 fz.thermostat: systemMode=0x${msg.data.systemMode.toString(16)} -> ${result.system_mode}`);
             }
             // Map setpoint to occupied_heating_setpoint (used for both heating and cooling)
             if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
                 result.occupied_heating_setpoint = msg.data.occupiedHeatingSetpoint / 100;
             } else if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
                 result.occupied_heating_setpoint = msg.data.occupiedCoolingSetpoint / 100;
-            }
-            
-            if (Object.keys(result).length > 0) {
-                meta.logger.debug(`ACW02 fz.thermostat: Converted attributes: ${JSON.stringify(result)}`);
             }
             
             return result;
@@ -357,9 +328,6 @@ const definition = {
                 } catch (error) {
                     console.error(`ACW02 polling: error_text read failed: ${error.message}`);
                 }
-                
-                // Note: All other attributes (temperature, setpoints, system_mode, all switches)
-                // now auto-report via REPORTING flag - no polling needed!
             },
         }),
     ],

@@ -496,10 +496,38 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
              current_state.clean_status ? "YES" : "NO",
              current_state.swing_on ? "ON" : "OFF");
     
-    /* Notify Zigbee layer of state change (for instant update instead of waiting for polling) */
-    if (state_change_callback) {
-        ESP_LOGD(TAG, "Notifying Zigbee of UART state change");
-        state_change_callback();
+    /* Notify Zigbee layer only if state actually changed (prevents excessive Zigbee traffic) */
+    static hvac_state_t prev_state = {0};
+    bool state_changed = false;
+    
+    // Check if any relevant state has changed
+    if (prev_state.power_on != current_state.power_on ||
+        prev_state.mode != current_state.mode ||
+        prev_state.fan_speed != current_state.fan_speed ||
+        prev_state.target_temp_c != current_state.target_temp_c ||
+        prev_state.ambient_temp_c != current_state.ambient_temp_c ||
+        prev_state.eco_mode != current_state.eco_mode ||
+        prev_state.night_mode != current_state.night_mode ||
+        prev_state.display_on != current_state.display_on ||
+        prev_state.purifier_on != current_state.purifier_on ||
+        prev_state.clean_status != current_state.clean_status ||
+        prev_state.swing_on != current_state.swing_on ||
+        prev_state.mute_on != current_state.mute_on ||
+        prev_state.error != current_state.error ||
+        prev_state.filter_dirty != current_state.filter_dirty ||
+        strcmp(prev_state.error_text, current_state.error_text) != 0) {
+        state_changed = true;
+    }
+    
+    if (state_changed) {
+        ESP_LOGI(TAG, "State change detected - notifying Zigbee");
+        prev_state = current_state;  // Save current state for next comparison
+        
+        if (state_change_callback) {
+            state_change_callback();
+        }
+    } else {
+        ESP_LOGD(TAG, "No state change - skipping Zigbee update");
     }
 }
 

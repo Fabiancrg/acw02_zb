@@ -459,6 +459,25 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID,
                                                  &system_mode, true);
                     
+                    // Also update running_mode immediately based on new system mode
+                    uint8_t running_mode = 0x00;  // Default: idle/off
+                    if (system_mode != 0x00) {  // If not OFF
+                        switch (system_mode) {
+                            case 0x04: running_mode = 0x04; break;  // Heat
+                            case 0x03: running_mode = 0x03; break;  // Cool
+                            case 0x07: running_mode = 0x07; break;  // Fan only
+                            case 0x01:  // Auto
+                            case 0x08:  // Dry
+                            default:
+                                running_mode = 0x00;  // Idle (we don't know actual operation)
+                                break;
+                        }
+                    }
+                    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
+                                                 &running_mode, true);
+                    
                     // Map Zigbee system mode to HVAC mode and send command to AC
                     hvac_mode_t hvac_mode = HVAC_MODE_OFF;
                     switch (system_mode) {
@@ -660,32 +679,36 @@ static void hvac_update_zigbee_attributes(uint8_t param)
      * This is different from system mode which is what it's SET to (off/auto/cool/heat/dry/fan)
      * For AUTO/DRY modes, we report 'idle' as running mode since we don't know what it's actually doing */
     running_mode = 0x00;  // Off/Idle (already declared at function scope)
+    
+    ESP_LOGI(TAG, "[DEBUG] Running mode calculation: power_on=%d, mode=0x%02X (HEAT=0x04, COOL=0x01, FAN=0x03, AUTO=0x00, DRY=0x02)", 
+             state.power_on, state.mode);
+    
     if (state.power_on) {
         switch (state.mode) {
             case HVAC_MODE_HEAT:
                 running_mode = 0x04;  // Heat mode
-                ESP_LOGD(TAG, "Running mode: HEAT (0x04)");
+                ESP_LOGI(TAG, "[DEBUG] Matched HVAC_MODE_HEAT, setting running_mode=0x04");
                 break;
             case HVAC_MODE_COOL:
                 running_mode = 0x03;  // Cool mode
-                ESP_LOGD(TAG, "Running mode: COOL (0x03)");
+                ESP_LOGI(TAG, "[DEBUG] Matched HVAC_MODE_COOL, setting running_mode=0x03");
                 break;
             case HVAC_MODE_FAN:
                 running_mode = 0x07;  // Fan only mode
-                ESP_LOGD(TAG, "Running mode: FAN (0x07)");
+                ESP_LOGI(TAG, "[DEBUG] Matched HVAC_MODE_FAN, setting running_mode=0x07");
                 break;
             case HVAC_MODE_AUTO:
             case HVAC_MODE_DRY:
             default:
                 running_mode = 0x00;  // Idle for auto/dry/unknown modes
-                ESP_LOGD(TAG, "Running mode: IDLE/AUTO/DRY (0x00), state.mode=%d", state.mode);
+                ESP_LOGI(TAG, "[DEBUG] Matched AUTO/DRY/default, setting running_mode=0x00, state.mode=%d", state.mode);
                 break;
         }
     } else {
-        ESP_LOGD(TAG, "Running mode: OFF/IDLE (0x00)");
+        ESP_LOGI(TAG, "[DEBUG] Power OFF, setting running_mode=0x00");
     }
     
-    ESP_LOGI(TAG, "Setting running_mode=0x%02X to Zigbee (Power=%d, HVAC Mode=%d)", 
+    ESP_LOGI(TAG, "[RUNNING_MODE] Final: running_mode=0x%02X (Power=%d, HVAC Mode=0x%02X)", 
              running_mode, state.power_on, state.mode);
     
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
