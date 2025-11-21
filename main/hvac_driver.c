@@ -17,6 +17,9 @@
 static const char *TAG = "HVAC_DRIVER";
 static const char *NVS_NAMESPACE = "hvac_storage";
 
+/* State change callback */
+static hvac_state_change_callback_t state_change_callback = NULL;
+
 /* Error code mapping structure */
 typedef struct {
     uint8_t code_high;  // High byte (ASCII character like 'E', 'P', 'U', etc.)
@@ -218,13 +221,16 @@ static uint16_t hvac_crc16(const uint8_t *data, size_t len)
  */
 static uint8_t hvac_encode_temperature(uint8_t temp_c)
 {
-    // Clamp temperature to valid range
+    // Clamp temperature to valid range (16-31°C)
     if (temp_c < 16) temp_c = 16;
     if (temp_c > 31) temp_c = 31;
     
-    // Send Celsius value directly
-    // The ACW02 protocol expects the temperature in Celsius
-    return temp_c;
+    /* ACW02 Protocol temperature encoding (Celsius only):
+     * - Frame byte value = actual_temp_celsius - 16
+     * - Example: 24°C → frame byte = 24-16 = 0x08
+     * - Range: 16-31°C → 0x00-0x0F in frame
+     */
+    return temp_c - 16;
 }
 
 /**
@@ -436,20 +442,27 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     current_state.mode = (hvac_mode_t)(b13 & 0x07);
     current_state.fan_speed = (hvac_fan_t)((b13 >> 4) & 0x0F);
     
-    // Byte 14: Temperature (with SILENT bit)
+    // Byte 14: Temperature (with SILENT bit in bit 6)
     uint8_t temp_byte = frame[14];
     bool silent_bit = (temp_byte & 0x40) != 0;
-    temp_byte &= 0x3F;  // Remove SILENT bit
+    temp_byte &= 0x3F;  // Mask to get 6-bit temperature value (0-63 range)
     
-    // Temperature is in Celsius (16-31°C range)
-    // The ACW02 sends temperature values directly in Celsius
-    if (temp_byte >= 16 && temp_byte <= 31) {
-        current_state.target_temp_c = temp_byte;
+    /* Temperature encoding (Celsius only - ACW02 protocol):
+     * - Frame byte value: 0-15 represents temperatures 16-31°C
+     * - Formula: actual_temp_celsius = frame_value + 16
+     * - Example: frame=0x00 → 16°C, frame=0x0F → 31°C
+     * 
+     * Note: Fahrenheit uses special encoding table (not implemented - AC typically in Celsius)
+     */
+    if (temp_byte <= 15) {
+        current_state.target_temp_c = 16 + temp_byte;  // 0-15 → 16-31°C
     } else {
-        // If out of expected range, clamp to valid range
-        ESP_LOGW(TAG, "Unexpected temperature value: %d, clamping to range", temp_byte);
-        current_state.target_temp_c = (temp_byte < 16) ? 16 : 31;
+        // Value out of normal Celsius range - clamp to valid range
+        ESP_LOGW(TAG, "Unexpected temperature byte value: 0x%02X (expected 0-15), clamping", temp_byte);
+        current_state.target_temp_c = (temp_byte > 15) ? 31 : 16;
     }
+    
+    ESP_LOGD(TAG, "Temperature: frame_byte=0x%02X, decoded=%d°C", temp_byte, current_state.target_temp_c);
     
     // Override fan if SILENT bit is set
     if (silent_bit) {
@@ -482,6 +495,12 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
              current_state.purifier_on ? "ON" : "OFF",
              current_state.clean_status ? "YES" : "NO",
              current_state.swing_on ? "ON" : "OFF");
+    
+    /* Notify Zigbee layer of state change (for instant update instead of waiting for polling) */
+    if (state_change_callback) {
+        ESP_LOGD(TAG, "Notifying Zigbee of UART state change");
+        state_change_callback();
+    }
 }
 
 /**
@@ -962,4 +981,17 @@ esp_err_t hvac_set_mute(bool mute_on)
 bool hvac_get_clean_status(void)
 {
     return current_state.clean_status;
+}
+
+/**
+ * @brief Register callback for state changes
+ */
+void hvac_register_state_change_callback(hvac_state_change_callback_t callback)
+{
+    state_change_callback = callback;
+    if (callback) {
+        ESP_LOGI(TAG, "State change callback registered");
+    } else {
+        ESP_LOGI(TAG, "State change callback unregistered");
+    }
 }

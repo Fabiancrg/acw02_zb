@@ -195,6 +195,21 @@ esp_err_t hvac_request_status(void);
  */
 esp_err_t hvac_send_keepalive(void);
 
+/**
+ * @brief State change callback function type
+ * 
+ * Called when UART receives a state change from the AC unit.
+ * This allows immediate notification instead of waiting for polling.
+ */
+typedef void (*hvac_state_change_callback_t)(void);
+
+/**
+ * @brief Register callback for state changes
+ * 
+ * @param callback Function to call when state changes (NULL to unregister)
+ */
+void hvac_register_state_change_callback(hvac_state_change_callback_t callback);
+
 #ifdef __cplusplus
 }
 #endif

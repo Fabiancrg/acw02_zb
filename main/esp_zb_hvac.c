@@ -25,7 +25,6 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "freertos/timers.h"
-#include <math.h>
 
 
 #if !defined ZB_ROUTER_ROLE
@@ -34,8 +33,8 @@
 
 static const char *TAG = "HVAC_ZIGBEE";
 
-/* HVAC state polling interval - detects physical remote changes, event-driven logic prevents unnecessary Zigbee traffic */
-#define HVAC_UPDATE_INTERVAL_MS     30000  // 30 seconds (near real-time for physical remote detection)
+/* Keepalive interval - required to maintain UART connection with AC unit */
+#define HVAC_KEEPALIVE_INTERVAL_MS  30000  // 30 seconds
 
 /* Boot button configuration for factory reset */
 #define BOOT_BUTTON_GPIO            GPIO_NUM_9
@@ -44,7 +43,7 @@ static const char *TAG = "HVAC_ZIGBEE";
 /********************* Function Declarations **************************/
 static esp_err_t deferred_driver_init(void);
 static void hvac_update_zigbee_attributes(uint8_t param);
-static void hvac_periodic_update(uint8_t param);
+static void hvac_keepalive_task(uint8_t param);
 static esp_err_t button_init(void);
 static void button_task(void *arg);
 static void factory_reset_device(uint8_t param);
@@ -203,6 +202,14 @@ static esp_err_t button_init(void)
     return ESP_OK;
 }
 
+/* Callback function for UART state changes - triggers immediate Zigbee update */
+static void hvac_uart_state_changed_callback(void)
+{
+    /* Schedule immediate Zigbee attribute update (runs in Zigbee task context)
+     * This ensures physical remote changes are reflected instantly */
+    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 100);
+}
+
 static esp_err_t deferred_driver_init(void)
 {
     ESP_LOGI(TAG, "[INIT] Starting deferred driver initialization...");
@@ -233,6 +240,11 @@ static esp_err_t deferred_driver_init(void)
         // Don't fail - we can still expose Zigbee endpoints without HVAC connected
     } else {
         ESP_LOGI(TAG, "[OK] HVAC driver initialized successfully");
+        
+        /* Register callback for instant state change notifications from UART */
+        ESP_LOGI(TAG, "[INIT] Registering UART state change callback...");
+        hvac_register_state_change_callback(hvac_uart_state_changed_callback);
+        ESP_LOGI(TAG, "[OK] UART state change callback registered - physical remote changes will be instant");
     }
     
     ESP_LOGI(TAG, "[INIT] Deferred initialization complete");
@@ -365,10 +377,13 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             /* Mark Zigbee connection as successful for OTA validation */
             ota_validation_zigbee_connected();
             
-            ESP_LOGI(TAG, "[JOIN] Scheduling periodic HVAC updates...");
+            ESP_LOGI(TAG, "[JOIN] Starting keepalive task and requesting initial state...");
             
-            /* Start periodic HVAC status updates */
-            esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_periodic_update, 0, 5000);
+            /* Request initial status to populate Zigbee attributes */
+            hvac_request_status();
+            
+            /* Start keepalive task (sends keepalive every 30s to maintain UART connection) */
+            esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_keepalive_task, 0, 5000);
             ESP_LOGI(TAG, "[JOIN] Setup complete!");
         } else {
             ESP_LOGW(TAG, "[JOIN] Network steering failed (status: %s)", 
@@ -419,24 +434,32 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             case ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_S16) {
                     int16_t temp_setpoint = *(int16_t *)message->attribute.data.value;
-                    // Temperature is in centidegrees (e.g., 2400 = 24.00°C)
                     uint8_t temp_c = (uint8_t)(temp_setpoint / 100);
-                    ESP_LOGI(TAG, "Temperature setpoint changed to %d°C", temp_c);
-                    hvac_set_temperature(temp_c);
+                    ESP_LOGI(TAG, "Temperature setpoint write request: %d°C", temp_c);
                     
-                    // Schedule update to sync back to Zigbee
-                    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                    // Update heating setpoint immediately (we only use heating setpoint for control)
+                    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID,
+                                                 &temp_setpoint, true);
+                    
+                    // Send command to AC (UART callback will update again when AC confirms)
+                    hvac_set_temperature(temp_c);
                 }
                 break;
                 
             case ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID:
                 if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM) {
                     uint8_t system_mode = *(uint8_t *)message->attribute.data.value;
-                    ESP_LOGI(TAG, "System mode changed to %d", system_mode);
+                    ESP_LOGI(TAG, "System mode write request: %d", system_mode);
                     
-                    // Map Zigbee system mode to HVAC mode
-                    // 0x00 = Off, 0x01 = Auto, 0x03 = Cool, 0x04 = Heat, 0x05 = Emergency Heat, 
-                    // 0x06 = Precooling, 0x07 = Fan only, 0x08 = Dry, 0x09 = Sleep
+                    // Update Zigbee attribute immediately
+                    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID,
+                                                 &system_mode, true);
+                    
+                    // Map Zigbee system mode to HVAC mode and send command to AC
                     hvac_mode_t hvac_mode = HVAC_MODE_OFF;
                     switch (system_mode) {
                         case 0x00: hvac_mode = HVAC_MODE_OFF; hvac_set_power(false); break;
@@ -449,8 +472,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                             ESP_LOGW(TAG, "Unsupported system mode: %d", system_mode);
                             break;
                     }
-                    
-                    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                    // UART callback will update again when AC confirms
                 }
                 break;
                 
@@ -461,15 +483,18 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         } else if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID) {
                 uint8_t fan_mode = *(uint8_t *)message->attribute.data.value;
-                ESP_LOGI(TAG, "Fan mode changed to 0x%02X", fan_mode);
+                ESP_LOGI(TAG, "Fan mode write request: 0x%02X", fan_mode);
                 
-                // Z2M sends ACW02 protocol values directly (0x00-0x06)
-                // Just pass through to HVAC driver
+                // Update Zigbee attribute immediately so Z2M sees the new value
+                esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,
+                                             ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                             ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
+                                             &fan_mode, true);
+                
+                // Send command to AC (UART callback will update again when AC confirms)
                 hvac_fan_t hvac_fan = (hvac_fan_t)fan_mode;
-                
                 ESP_LOGI(TAG, "Setting HVAC fan to: 0x%02X", hvac_fan);
                 hvac_set_fan_speed(hvac_fan);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
             }
         }
     }
@@ -478,9 +503,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[ECO] Mode %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[ECO] Mode %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_eco_mode(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -489,9 +514,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[SWING] Mode %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[SWING] Mode %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_swing(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -500,9 +525,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[DISPLAY] %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[DISPLAY] %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_display(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -511,9 +536,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[NIGHT] Mode %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[NIGHT] Mode %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_night_mode(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -522,9 +547,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[PURIFIER] %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[PURIFIER] %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_purifier(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -538,9 +563,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
-                ESP_LOGI(TAG, "[MUTE] %s", on_off ? "ON" : "OFF");
+                ESP_LOGI(TAG, "[MUTE] %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
                 hvac_set_mute(on_off);
-                esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 500);
+                /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }
     }
@@ -607,21 +632,28 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID,
-                                 &system_mode, false);
+                                 &system_mode, true);
     
-    /* Update temperature setpoint (in centidegrees) */
+    /* Update temperature setpoint (in centidegrees)
+     * ACW02 uses single setpoint - only update occupied_heating_setpoint.
+     * Leave cooling_setpoint at max (31°C) to avoid deadband validation conflicts.
+     * Home Assistant and Z2M use heating setpoint for thermostat control. */
     int16_t temp_setpoint = state.target_temp_c * 100;
+    ESP_LOGI(TAG, "[TEMP] AC target: %d°C → Zigbee heating_setpoint: %d centidegrees", 
+             state.target_temp_c, temp_setpoint);
+    
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID,
-                                 &temp_setpoint, false);
+                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID,
+                                 &temp_setpoint, true);
+    ESP_LOGD(TAG, "[TEMP] Updated heating_setpoint to %d", temp_setpoint);
     
     /* Update local temperature (ambient) */
     int16_t local_temp = state.ambient_temp_c * 100;
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
-                                 &local_temp, false);
+                                 &local_temp, true);
     
     /* Update running mode based on power and mode */
     /* Note: Running mode shows what the AC is CURRENTLY doing (idle/heat/cool/fan)
@@ -659,7 +691,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
-                                 &running_mode, false);
+                                 &running_mode, true);
     
     /* Note: running_mode is not auto-reportable in ESP-Zigbee stack.
      * Z2M will read this attribute when needed (e.g., on state refresh or periodic polling). */
@@ -668,43 +700,43 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.eco_mode, false);
+                                 &state.eco_mode, true);
     
     /* Update Swing switch state - Endpoint 3 */
     esp_zb_zcl_set_attribute_val(HA_ESP_SWING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.swing_on, false);
+                                 &state.swing_on, true);
     
     /* Update Display switch state - Endpoint 4 */
     esp_zb_zcl_set_attribute_val(HA_ESP_DISPLAY_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.display_on, false);
+                                 &state.display_on, true);
     
     /* Update Night Mode switch state - Endpoint 5 */
     esp_zb_zcl_set_attribute_val(HA_ESP_NIGHT_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.night_mode, false);
+                                 &state.night_mode, true);
     
     /* Update Purifier switch state - Endpoint 6 */
     esp_zb_zcl_set_attribute_val(HA_ESP_PURIFIER_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.purifier_on, false);
+                                 &state.purifier_on, true);
     
     /* Update Clean status binary sensor - Endpoint 7 (Read-Only) */
     esp_zb_zcl_set_attribute_val(HA_ESP_CLEAN_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.clean_status, false);
+                                 &state.clean_status, true);
     
     /* Update Mute switch state - Endpoint 8 */
     esp_zb_zcl_set_attribute_val(HA_ESP_MUTE_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.mute_on, false);
+                                 &state.mute_on, true);
     
     /* Update error text in Basic cluster locationDescription attribute - Endpoint 1 */
     // Zigbee string format: first byte is length, followed by chars
@@ -720,7 +752,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID,
-                                 error_text_zigbee, false);
+                                 error_text_zigbee, true);
     
     /* Update Error Status binary sensor - Endpoint 9 */
     // Error status is ON when there's an error (non-empty error text)
@@ -728,7 +760,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &error_status_on, false);
+                                 &error_status_on, true);
     
     /* Log error text when error/warning is active */
     bool error_active = state.error || state.filter_dirty;
@@ -747,7 +779,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
-                                 &zigbee_fan_mode, false);
+                                 &zigbee_fan_mode, true);
     
     ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, LocalTemp=%.1f°C, TargetTemp=%d°C, Fan=%d, RunningMode=0x%02X", 
              system_mode, state.ambient_temp_c, state.target_temp_c, zigbee_fan_mode, running_mode);
@@ -756,99 +788,13 @@ static void hvac_update_zigbee_attributes(uint8_t param)
              state.clean_status, state.swing_on, state.mute_on);
 }
 
-static void hvac_periodic_update(uint8_t param)
+static void hvac_keepalive_task(uint8_t param)
 {
-    static hvac_state_t previous_state = {0};
-    static bool first_run = true;
-    hvac_state_t current_state;
-    
-    /* Request fresh status from HVAC unit via UART */
-    hvac_request_status();
-    
-    /* Get current state */
-    esp_err_t ret = hvac_get_state(&current_state);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "[POLL] Failed to get HVAC state");
-        goto schedule_next;
-    }
-    
-    /* On first run, always update to sync initial state */
-    if (first_run) {
-        ESP_LOGI(TAG, "[POLL] First run - syncing initial state to Zigbee");
-        hvac_update_zigbee_attributes(0);
-        memcpy(&previous_state, &current_state, sizeof(hvac_state_t));
-        first_run = false;
-        goto schedule_next;
-    }
-    
-    /* Check if any state has changed */
-    bool state_changed = false;
-    
-    if (current_state.power_on != previous_state.power_on) {
-        ESP_LOGI(TAG, "[POLL] Power changed: %d -> %d", previous_state.power_on, current_state.power_on);
-        state_changed = true;
-    }
-    if (current_state.mode != previous_state.mode) {
-        ESP_LOGI(TAG, "[POLL] Mode changed: %d -> %d", previous_state.mode, current_state.mode);
-        state_changed = true;
-    }
-    if (current_state.target_temp_c != previous_state.target_temp_c) {
-        ESP_LOGI(TAG, "[POLL] Target temp changed: %d -> %d°C", previous_state.target_temp_c, current_state.target_temp_c);
-        state_changed = true;
-    }
-    if (fabsf(current_state.ambient_temp_c - previous_state.ambient_temp_c) >= 0.5f) {
-        ESP_LOGI(TAG, "[POLL] Ambient temp changed: %.1f -> %.1f°C", previous_state.ambient_temp_c, current_state.ambient_temp_c);
-        state_changed = true;
-    }
-    if (current_state.fan_speed != previous_state.fan_speed) {
-        ESP_LOGI(TAG, "[POLL] Fan speed changed: %d -> %d", previous_state.fan_speed, current_state.fan_speed);
-        state_changed = true;
-    }
-    if (current_state.eco_mode != previous_state.eco_mode) {
-        ESP_LOGI(TAG, "[POLL] Eco mode changed: %d -> %d", previous_state.eco_mode, current_state.eco_mode);
-        state_changed = true;
-    }
-    if (current_state.swing_on != previous_state.swing_on) {
-        ESP_LOGI(TAG, "[POLL] Swing changed: %d -> %d", previous_state.swing_on, current_state.swing_on);
-        state_changed = true;
-    }
-    if (current_state.display_on != previous_state.display_on) {
-        ESP_LOGI(TAG, "[POLL] Display changed: %d -> %d", previous_state.display_on, current_state.display_on);
-        state_changed = true;
-    }
-    if (current_state.night_mode != previous_state.night_mode) {
-        ESP_LOGI(TAG, "[POLL] Night mode changed: %d -> %d", previous_state.night_mode, current_state.night_mode);
-        state_changed = true;
-    }
-    if (current_state.purifier_on != previous_state.purifier_on) {
-        ESP_LOGI(TAG, "[POLL] Purifier changed: %d -> %d", previous_state.purifier_on, current_state.purifier_on);
-        state_changed = true;
-    }
-    if (current_state.clean_status != previous_state.clean_status) {
-        ESP_LOGI(TAG, "[POLL] Clean status changed: %d -> %d", previous_state.clean_status, current_state.clean_status);
-        state_changed = true;
-    }
-    if (current_state.mute_on != previous_state.mute_on) {
-        ESP_LOGI(TAG, "[POLL] Mute changed: %d -> %d", previous_state.mute_on, current_state.mute_on);
-        state_changed = true;
-    }
-    if (strcmp(current_state.error_text, previous_state.error_text) != 0) {
-        ESP_LOGI(TAG, "[POLL] Error text changed: '%s' -> '%s'", previous_state.error_text, current_state.error_text);
-        state_changed = true;
-    }
-    
-    /* Only update Zigbee if state changed - let REPORTING handle automatic updates */
-    if (state_changed) {
-        ESP_LOGI(TAG, "[POLL] State changed - updating Zigbee attributes (REPORTING will auto-send)");
-        hvac_update_zigbee_attributes(0);
-        memcpy(&previous_state, &current_state, sizeof(hvac_state_t));
-    } else {
-        ESP_LOGD(TAG, "[POLL] No state changes detected - skipping Zigbee update");
-    }
-    
-schedule_next:
     /* Send keepalive to HVAC (required to maintain UART connection) */
     hvac_send_keepalive();
+    
+    /* Also request status to ensure UART stays synchronized */
+    hvac_request_status();
     
     /* Log Zigbee TX power every hour for monitoring */
     static uint8_t log_counter = 0;
@@ -859,8 +805,8 @@ schedule_next:
         log_counter = 0;
     }
     
-    /* Schedule next poll in 30 seconds - event-driven logic prevents unnecessary Zigbee traffic */
-    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_periodic_update, 0, HVAC_UPDATE_INTERVAL_MS);
+    /* Schedule next keepalive */
+    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_keepalive_task, 0, HVAC_KEEPALIVE_INTERVAL_MS);
 }
 
 static void esp_zb_task(void *pvParameters)
@@ -977,8 +923,8 @@ static void esp_zb_task(void *pvParameters)
     
     /* Add mandatory attributes with REPORTING flag */
     int16_t local_temp = 25 * 100;  // 25°C default
-    int16_t cooling_setpoint = 24 * 100;  // 24°C default
-    int16_t heating_setpoint = 22 * 100;  // 22°C default
+    int16_t cooling_setpoint = 31 * 100;  // 31°C (max) - kept high to avoid deadband conflicts
+    int16_t heating_setpoint = 22 * 100;  // 22°C default - actual setpoint used for control
     uint8_t control_sequence = 0x04;  // Cooling and heating
     uint8_t system_mode = 0x00;  // Off
     
@@ -1014,6 +960,33 @@ static void esp_zb_task(void *pvParameters)
     ESP_ERROR_CHECK(esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
                                                         ESP_ZB_ZCL_ATTR_THERMOSTAT_CONTROL_SEQUENCE_OF_OPERATION_ID,
                                                         &control_sequence));
+    
+    /* Add setpoint limits (required for validation - ACW02 supports 16-31°C) */
+    int16_t min_heat_setpoint = 1600;  // 16°C in centidegrees
+    int16_t max_heat_setpoint = 3100;  // 31°C in centidegrees
+    int16_t min_cool_setpoint = 1600;  // 16°C in centidegrees
+    int16_t max_cool_setpoint = 3100;  // 31°C in centidegrees
+    
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID,
+                                       &min_heat_setpoint);
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID,
+                                       &max_heat_setpoint);
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_COOL_SETPOINT_LIMIT_ID,
+                                       &min_cool_setpoint);
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_COOL_SETPOINT_LIMIT_ID,
+                                       &max_cool_setpoint);
+    
+    /* Add MinSetpointDeadBand - minimum separation between heating and cooling setpoints
+     * Set to 0 since ACW02 uses single setpoint for both modes.
+     * This tells the Zigbee stack we allow heating and cooling setpoints to be equal. */
+    uint8_t min_deadband = 0;  // 0 = 0.0°C (allow same value for both setpoints)
+    esp_zb_thermostat_cluster_add_attr(esp_zb_thermostat_cluster,
+                                       ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_SETPOINT_DEAD_BAND_ID,
+                                       &min_deadband);
     
     /* Add running_mode attribute (shows current operating mode) */
     uint8_t running_mode = 0x00;  // Initial state: idle

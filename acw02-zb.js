@@ -73,7 +73,7 @@ const fzLocal = {
                     0x0D: 'quiet',    // TURBO (map to quiet for now)
                 };
                 const result = {fan_mode: fanModeMap[msg.data.fanMode]};
-                meta.logger.info(`ACW02 fz.fan_mode: Received fanMode=0x${msg.data.fanMode.toString(16)} -> ${result.fan_mode}`);
+                meta.logger.info(`ACW02 fz.fan_mode: type=${msg.type}, fanMode=0x${msg.data.fanMode.toString(16)} -> ${result.fan_mode}`);
                 return result;
             }
         },
