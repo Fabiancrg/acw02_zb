@@ -476,7 +476,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
-                                                 &running_mode, true);
+                                                 &running_mode, false);
                     
                     // Map Zigbee system mode to HVAC mode and send command to AC
                     hvac_mode_t hvac_mode = HVAC_MODE_OFF;
@@ -508,7 +508,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,
                                              ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                              ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
-                                             &fan_mode, true);
+                                             &fan_mode, false);
                 
                 // Send command to AC (UART callback will update again when AC confirms)
                 hvac_fan_t hvac_fan = (hvac_fan_t)fan_mode;
