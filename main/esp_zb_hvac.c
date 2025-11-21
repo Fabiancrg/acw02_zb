@@ -651,7 +651,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID,
-                                 &system_mode, true);
+                                 &system_mode, false);
     
     /* Update temperature setpoint (in centidegrees)
      * ACW02 uses single setpoint - only update occupied_heating_setpoint.
@@ -664,7 +664,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID,
-                                 &temp_setpoint, true);
+                                 &temp_setpoint, false);
     ESP_LOGD(TAG, "[TEMP] Updated heating_setpoint to %d", temp_setpoint);
     
     /* Update local temperature (ambient) */
@@ -672,7 +672,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
-                                 &local_temp, true);
+                                 &local_temp, false);
     
     /* Update running mode based on power and mode */
     /* Note: Running mode shows what the AC is CURRENTLY doing (idle/heat/cool/fan)
@@ -714,7 +714,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
-                                 &running_mode, true);
+                                 &running_mode, false);
     
     /* Note: running_mode is not auto-reportable in ESP-Zigbee stack.
      * Z2M will read this attribute when needed (e.g., on state refresh or periodic polling). */
@@ -723,43 +723,43 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_ECO_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.eco_mode, true);
+                                 &state.eco_mode, false);
     
     /* Update Swing switch state - Endpoint 3 */
     esp_zb_zcl_set_attribute_val(HA_ESP_SWING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.swing_on, true);
+                                 &state.swing_on, false);
     
     /* Update Display switch state - Endpoint 4 */
     esp_zb_zcl_set_attribute_val(HA_ESP_DISPLAY_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.display_on, true);
+                                 &state.display_on, false);
     
     /* Update Night Mode switch state - Endpoint 5 */
     esp_zb_zcl_set_attribute_val(HA_ESP_NIGHT_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.night_mode, true);
+                                 &state.night_mode, false);
     
     /* Update Purifier switch state - Endpoint 6 */
     esp_zb_zcl_set_attribute_val(HA_ESP_PURIFIER_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.purifier_on, true);
+                                 &state.purifier_on, false);
     
     /* Update Clean status binary sensor - Endpoint 7 (Read-Only) */
     esp_zb_zcl_set_attribute_val(HA_ESP_CLEAN_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.clean_status, true);
+                                 &state.clean_status, false);
     
     /* Update Mute switch state - Endpoint 8 */
     esp_zb_zcl_set_attribute_val(HA_ESP_MUTE_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &state.mute_on, true);
+                                 &state.mute_on, false);
     
     /* Update error text in Basic cluster locationDescription attribute - Endpoint 1 */
     // Zigbee string format: first byte is length, followed by chars
@@ -775,7 +775,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_BASIC,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_BASIC_LOCATION_DESCRIPTION_ID,
-                                 error_text_zigbee, true);
+                                 error_text_zigbee, false);
     
     /* Update Error Status binary sensor - Endpoint 9 */
     // Error status is ON when there's an error (non-empty error text)
@@ -783,7 +783,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_ERROR_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
-                                 &error_status_on, true);
+                                 &error_status_on, false);
     
     /* Log error text when error/warning is active */
     bool error_active = state.error || state.filter_dirty;
@@ -802,7 +802,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
     esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_FAN_CONTROL,
                                  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
                                  ESP_ZB_ZCL_ATTR_FAN_CONTROL_FAN_MODE_ID,
-                                 &zigbee_fan_mode, true);
+                                 &zigbee_fan_mode, false);
     
     ESP_LOGI(TAG, "Updated Zigbee attributes: Mode=%d, LocalTemp=%.1f°C, TargetTemp=%d°C, Fan=%d, RunningMode=0x%02X", 
              system_mode, state.ambient_temp_c, state.target_temp_c, zigbee_fan_mode, running_mode);
