@@ -32,7 +32,7 @@
 #define ESP_INTR_FLAG_DEFAULT 0
 
 /* Basic manufacturer information */
-#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
+#define ESP_MANUFACTURER_NAME "\x15""Custom devices (DiY)"      /* Customized manufacturer name */
 #define ESP_MODEL_IDENTIFIER "\x07""acw02-z"         /* Customized model identifier */
 
 #define ESP_ZB_ZED_CONFIG()                                         \
