@@ -1,7 +1,7 @@
 /**
- * Zigbee2MQTT External Converter for ACW02 HVAC Thermostat
+ * Zigbee2MQTT Converter for ACW02 HVAC Thermostat
  * 
- * This file defines the device for Zigbee2MQTT to properly expose all controls.
+ * This file defines the device for Zigbee2MQTT (TypeScript version for upstream contribution)
  * 
  * REPORTING FLAG OPTIMIZATION:
  * - Device uses ESP_ZB_ZCL_ATTR_ACCESS_REPORTING flag for automatic attribute reporting
@@ -10,14 +10,15 @@
  *   * runningMode (Zigbee stack limitation)
  *   * fanMode (not in standard reportable attributes)
  *   * error_text (locationDesc - not typically reportable)
- * 
  */
 
-const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
-const tz = require('zigbee-herdsman-converters/converters/toZigbee');
-const exposes = require('zigbee-herdsman-converters/lib/exposes');
-const reporting = require('zigbee-herdsman-converters/lib/reporting');
-const m = require('zigbee-herdsman-converters/lib/modernExtend');
+import * as fz from '../converters/fromZigbee';
+import * as tz from '../converters/toZigbee';
+import * as exposes from '../lib/exposes';
+import * as reporting from '../lib/reporting';
+import * as m from '../lib/modernExtend';
+import type {DefinitionWithExtend, Fz, Tz, KeyValue} from '../lib/types';
+
 const e = exposes.presets;
 const ea = exposes.access;
 
@@ -27,7 +28,7 @@ const tzLocal = {
         key: ['fan_mode'],
         convertSet: async (entity, key, value, meta) => {
             // Map custom fan mode names to ACW02 protocol values
-            const fanModeMap = {
+            const fanModeMap: {[key: string]: number} = {
                 'quiet': 0x06,   // SILENT
                 'low': 0x01,     // P20
                 'low-med': 0x02, // P40
@@ -36,7 +37,7 @@ const tzLocal = {
                 'high': 0x05,    // P100
                 'auto': 0x00,    // AUTO
             };
-            const numericValue = fanModeMap[value];
+            const numericValue = fanModeMap[value as string];
             if (numericValue !== undefined) {
                 await entity.write('hvacFanCtrl', {'fanMode': numericValue});
                 return {state: {fan_mode: value}};
@@ -45,7 +46,7 @@ const tzLocal = {
         convertGet: async (entity, key, meta) => {
             await entity.read('hvacFanCtrl', ['fanMode']);
         },
-    },
+    } satisfies Tz.Converter,
 };
 
 const fzLocal = {
@@ -55,7 +56,7 @@ const fzLocal = {
         convert: (model, msg, publish, options, meta) => {
             if (msg.data.hasOwnProperty('fanMode')) {
                 // Map ACW02 protocol values to custom fan mode names
-                const fanModeMap = {
+                const fanModeMap: {[key: number]: string} = {
                     0x00: 'auto',     // AUTO
                     0x01: 'low',      // P20
                     0x02: 'low-med',  // P40
@@ -65,10 +66,10 @@ const fzLocal = {
                     0x06: 'quiet',    // SILENT
                     0x0D: 'quiet',    // TURBO (map to quiet for now)
                 };
-                return {fan_mode: fanModeMap[msg.data.fanMode]};
+                return {fan_mode: fanModeMap[msg.data.fanMode as number]};
             }
         },
-    },
+    } satisfies Fz.Converter<'hvacFanCtrl', undefined, ['attributeReport', 'readResponse']>,
 
     // Read-only binary sensor for clean status (endpoint 7)
     clean_status: {
@@ -80,7 +81,7 @@ const fzLocal = {
                 return {filter_clean_status: state};
             }
         },
-    },
+    } satisfies Fz.Converter<'genOnOff', undefined, ['attributeReport', 'readResponse']>,
 
     // Read-only binary sensor for error status (endpoint 9)
     error_status: {
@@ -92,7 +93,7 @@ const fzLocal = {
                 return {ac_error_status: state};
             }
         },
-    },
+    } satisfies Fz.Converter<'genOnOff', undefined, ['attributeReport', 'readResponse']>,
 
     error_text: {
         cluster: 'genBasic',
@@ -114,28 +115,29 @@ const fzLocal = {
                 return {error_text: errorText.trim()};
             }
         },
-    },
+    } satisfies Fz.Converter<'genBasic', undefined, ['attributeReport', 'readResponse']>,
+
     // Custom converter for thermostat attributes
     thermostat: {
         cluster: 'hvacThermostat',
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
-            const result = {};
+            const result: KeyValue = {};
             if (msg.data.hasOwnProperty('localTemp')) {
-                result.local_temperature = msg.data.localTemp / 100;
+                result.local_temperature = (msg.data.localTemp as number) / 100;
             }
             if (msg.data.hasOwnProperty('runningMode')) {
                 // runningMode is an 8-bit enum: 0x00=idle, 0x03=cool, 0x04=heat, 0x07=fan
-                const modeMap = {
+                const modeMap: {[key: number]: string} = {
                     0x00: 'idle',
                     0x03: 'cool',
                     0x04: 'heat',
                     0x07: 'fan_only',
                 };
-                result.running_state = modeMap[msg.data.runningMode] || 'idle';
+                result.running_state = modeMap[msg.data.runningMode as number] || 'idle';
             }
             if (msg.data.hasOwnProperty('systemMode')) {
-                const sysModeMap = {
+                const sysModeMap: {[key: number]: string} = {
                     0x00: 'off',
                     0x01: 'auto',
                     0x03: 'cool',
@@ -143,21 +145,21 @@ const fzLocal = {
                     0x07: 'fan_only',
                     0x08: 'dry',
                 };
-                result.system_mode = sysModeMap[msg.data.systemMode] || 'off';
+                result.system_mode = sysModeMap[msg.data.systemMode as number] || 'off';
             }
             // Map setpoint to occupied_heating_setpoint (used for both heating and cooling)
             if (msg.data.hasOwnProperty('occupiedHeatingSetpoint')) {
-                result.occupied_heating_setpoint = msg.data.occupiedHeatingSetpoint / 100;
+                result.occupied_heating_setpoint = (msg.data.occupiedHeatingSetpoint as number) / 100;
             } else if (msg.data.hasOwnProperty('occupiedCoolingSetpoint')) {
-                result.occupied_heating_setpoint = msg.data.occupiedCoolingSetpoint / 100;
+                result.occupied_heating_setpoint = (msg.data.occupiedCoolingSetpoint as number) / 100;
             }
             
             return result;
         },
-    },
+    } satisfies Fz.Converter<'hvacThermostat', undefined, ['attributeReport', 'readResponse']>,
 };
 
-const definition = {
+const definition: DefinitionWithExtend = {
     zigbeeModel: ['acw02-z'],
     model: 'ACW02-ZB',
     vendor: 'Custom devices (DiY)',
@@ -192,17 +194,17 @@ const definition = {
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
             .withRunningState(['idle', 'heat', 'cool', 'fan_only']),
-        exposes.enum('fan_mode', exposes.access.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
+        exposes.enum('fan_mode', ea.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
             .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO'),
-        exposes.text('error_text', exposes.access.STATE_GET)
+        exposes.text('error_text', ea.STATE_GET)
             .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
-        exposes.binary('ac_error_status', exposes.access.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
+        exposes.binary('ac_error_status', ea.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
         e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
         e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
-        exposes.binary('filter_clean_status', exposes.access.STATE_GET, 'ON', 'OFF').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
+        exposes.binary('filter_clean_status', ea.STATE_GET, 'ON', 'OFF').withDescription('Filter cleaning status indicator (read-only, cleared by AC unit)'),
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
@@ -285,7 +287,7 @@ const definition = {
             await endpoint1.read('genBasic', ['locationDesc']);  // Error text
             await endpoint1.read('hvacFanCtrl', ['fanMode']);  // Not auto-reportable
         } catch (error) {
-            logger.warn(`ACW02 configure: Initial read failed: ${error.message}`);
+            logger?.warn(`ACW02 configure: Initial read failed: ${(error as Error).message}`);
         }
     },
     
@@ -312,21 +314,21 @@ const definition = {
                     // runningMode - ESP-Zigbee stack limitation, cannot auto-report
                     await endpoint1.read('hvacThermostat', ['runningMode']);
                 } catch (error) {
-                    console.error(`ACW02 polling: runningMode read failed: ${error.message}`);
+                    console.error(`ACW02 polling: runningMode read failed: ${(error as Error).message}`);
                 }
                 
                 try {
                     // fanMode - Not in standard reportable attributes
                     await endpoint1.read('hvacFanCtrl', ['fanMode']);
                 } catch (error) {
-                    console.error(`ACW02 polling: fanMode read failed: ${error.message}`);
+                    console.error(`ACW02 polling: fanMode read failed: ${(error as Error).message}`);
                 }
                 
                 try {
                     // error_text (locationDesc) - Not typically reportable
                     await endpoint1.read('genBasic', ['locationDesc']);
                 } catch (error) {
-                    console.error(`ACW02 polling: error_text read failed: ${error.message}`);
+                    console.error(`ACW02 polling: error_text read failed: ${(error as Error).message}`);
                 }
             },
         }),
@@ -334,4 +336,4 @@ const definition = {
     ota: true,
 };
 
-module.exports = definition;
+export default definition;
