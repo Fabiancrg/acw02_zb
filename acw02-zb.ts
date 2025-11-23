@@ -22,61 +22,13 @@ import type {DefinitionWithExtend, Fz, Tz, KeyValue} from '../lib/types';
 const e = exposes.presets;
 const ea = exposes.access;
 
-// Custom converters for named switches and custom fan modes
-const tzLocal = {
-    fan_mode: m.enumLookup({
-        key: 'fan_mode',
-        cluster: 'hvacFanCtrl',
-        attribute: 'fanMode',
-        lookup: {
-            'quiet': 0x06,   // SILENT
-            'low': 0x01,     // P20
-            'low-med': 0x02, // P40
-            'medium': 0x03,  // P60
-            'med-high': 0x04,// P80
-            'high': 0x05,    // P100
-            'auto': 0x00,    // AUTO
-        },
-        reverseLookup: {
-            0x00: 'auto',     // AUTO
-            0x01: 'low',      // P20
-            0x02: 'low-med',  // P40
-            0x03: 'medium',   // P60
-            0x04: 'med-high', // P80
-            0x05: 'high',     // P100
-            0x06: 'quiet',    // SILENT
-            0x0D: 'quiet',    // TURBO (map to quiet for now)
-        },
-    }) as Tz.Converter,
-};
-
+// Custom converters for specialized functionality
 const fzLocal = {
-    fan_mode: {
-        cluster: 'hvacFanCtrl',
-        type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
-            if (msg.data.hasOwnProperty('fanMode')) {
-                // Map ACW02 protocol values to custom fan mode names
-                const fanModeMap: {[key: number]: string} = {
-                    0x00: 'auto',     // AUTO
-                    0x01: 'low',      // P20
-                    0x02: 'low-med',  // P40
-                    0x03: 'medium',   // P60
-                    0x04: 'med-high', // P80
-                    0x05: 'high',     // P100
-                    0x06: 'quiet',    // SILENT
-                    0x0D: 'quiet',    // TURBO (map to quiet for now)
-                };
-                return {fan_mode: fanModeMap[msg.data.fanMode as number]};
-            }
-        },
-    } satisfies Fz.Converter<'hvacFanCtrl', undefined, ['attributeReport', 'readResponse']>,
-
     // Read-only binary sensor for clean status (endpoint 7)
     clean_status: {
         cluster: 'genOnOff',
         type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
+        convert: (model: any, msg: any, publish: any, options: any, meta: any) => {
             if (msg.endpoint.ID === 7 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
                 return {filter_clean_status: state};
@@ -88,7 +40,7 @@ const fzLocal = {
     error_status: {
         cluster: 'genOnOff',
         type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
+        convert: (model: any, msg: any, publish: any, options: any, meta: any) => {
             if (msg.endpoint.ID === 9 && msg.data.hasOwnProperty('onOff')) {
                 const state = msg.data['onOff'] === 1 ? 'ON' : 'OFF';
                 return {ac_error_status: state};
@@ -99,7 +51,7 @@ const fzLocal = {
     error_text: {
         cluster: 'genBasic',
         type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
+        convert: (model: any, msg: any, publish: any, options: any, meta: any) => {
             if (msg.endpoint.ID === 1 && msg.data['locationDesc'] !== undefined) {
                 let errorText = '';
                 const locationDesc = msg.data['locationDesc'];
@@ -122,7 +74,7 @@ const fzLocal = {
     thermostat: {
         cluster: 'hvacThermostat',
         type: ['attributeReport', 'readResponse'],
-        convert: (model, msg, publish, options, meta) => {
+        convert: (model: any, msg: any, publish: any, options: any, meta: any) => {
             const result: KeyValue = {};
             if (msg.data.hasOwnProperty('localTemp')) {
                 result.local_temperature = (msg.data.localTemp as number) / 100;
@@ -169,7 +121,6 @@ const definition: DefinitionWithExtend = {
     // Supported features
     fromZigbee: [
         fzLocal.thermostat,   // Custom thermostat converter
-        fzLocal.fan_mode,
         fzLocal.clean_status, // Read-only binary sensor for endpoint 7
         fzLocal.error_status, // Read-only binary sensor for endpoint 9
         fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8)
@@ -179,7 +130,6 @@ const definition: DefinitionWithExtend = {
         tz.thermostat_local_temperature,
         tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
-        tzLocal.fan_mode,
         tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7
         // Note: clean_status (endpoint 7) is read-only, no toZigbee converter
     ],
@@ -191,8 +141,6 @@ const definition: DefinitionWithExtend = {
             .withLocalTemperature()
             .withSystemMode(['off', 'auto', 'cool', 'heat', 'dry', 'fan_only'])
             .withRunningState(['idle', 'heat', 'cool', 'fan_only']),
-        exposes.enum('fan_mode', ea.ALL, ['quiet', 'low', 'low-med', 'medium', 'med-high', 'high', 'auto'])
-            .withDescription('Fan speed mapped to ACW02: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO'),
         exposes.text('error_text', ea.STATE_GET)
             .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
         exposes.binary('ac_error_status', ea.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
@@ -205,21 +153,27 @@ const definition: DefinitionWithExtend = {
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
-    // Map endpoints with descriptive names using m.deviceEndpoints
-    endpoint: m.deviceEndpoints({
-        default: 1,
-        eco_mode: 2,
-        swing_mode: 3,
-        display: 4,
-        night_mode: 5,
-        purifier: 6,
-        clean_sensor: 7,
-        mute: 8,
-        error_sensor: 9,
-    }),
+    // Map endpoints with descriptive names
+    endpoint: (device: any) => {
+        return {
+            'default': 1,
+            'eco_mode': 2,
+            'swing_mode': 3,
+            'display': 4,
+            'night_mode': 5,
+            'purifier': 6,
+            'clean_sensor': 7,
+            'mute': 8,
+            'error_sensor': 9,
+        };
+    },
+    
+    meta: {
+        multiEndpoint: true,
+    },
     
     // Configure reporting - with REPORTING flag, most attributes auto-report!
-    configure: async (device, coordinatorEndpoint, logger) => {
+    configure: async (device: any, coordinatorEndpoint: any, logger: any) => {
         const endpoint1 = device.getEndpoint(1);
         const endpoint2 = device.getEndpoint(2);
         const endpoint3 = device.getEndpoint(3);
@@ -288,6 +242,21 @@ const definition: DefinitionWithExtend = {
     
     // Minimal polling for truly unreportable attributes only (with REPORTING flag, most attributes now auto-report!)
     extend: [
+        m.enumLookup({
+            name: 'fan_mode',
+            cluster: 'hvacFanCtrl',
+            attribute: 'fanMode',
+            lookup: {
+                'auto': 0x00,
+                'low': 0x01,
+                'low-med': 0x02,
+                'medium': 0x03,
+                'med-high': 0x04,
+                'high': 0x05,
+                'quiet': 0x06,
+            },
+            description: 'Fan speed: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO',
+        }),
         m.poll({
             key: "acw02_state",
             option: e
@@ -297,7 +266,7 @@ const definition: DefinitionWithExtend = {
                     "ACW02 HVAC minimal polling for attributes that ESP-Zigbee stack cannot auto-report (runningMode, fanMode, errorText). Default is 60 seconds. Most attributes now auto-report via REPORTING flag! Set to -1 to disable."
                 ),
             defaultIntervalSeconds: 60,  // Can be increased since most things now auto-report
-            poll: async (device) => {
+            poll: async (device: any) => {
                 const endpoint1 = device.getEndpoint(1);
                 if (!endpoint1) {
                     console.warn(`ACW02 polling: endpoint 1 not found`);
