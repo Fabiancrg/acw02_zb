@@ -24,29 +24,30 @@ const ea = exposes.access;
 
 // Custom converters for named switches and custom fan modes
 const tzLocal = {
-    fan_mode: {
-        key: ['fan_mode'],
-        convertSet: async (entity, key, value, meta) => {
-            // Map custom fan mode names to ACW02 protocol values
-            const fanModeMap: {[key: string]: number} = {
-                'quiet': 0x06,   // SILENT
-                'low': 0x01,     // P20
-                'low-med': 0x02, // P40
-                'medium': 0x03,  // P60
-                'med-high': 0x04,// P80
-                'high': 0x05,    // P100
-                'auto': 0x00,    // AUTO
-            };
-            const numericValue = fanModeMap[value as string];
-            if (numericValue !== undefined) {
-                await entity.write('hvacFanCtrl', {'fanMode': numericValue});
-                return {state: {fan_mode: value}};
-            }
+    fan_mode: m.enumLookup({
+        key: 'fan_mode',
+        cluster: 'hvacFanCtrl',
+        attribute: 'fanMode',
+        lookup: {
+            'quiet': 0x06,   // SILENT
+            'low': 0x01,     // P20
+            'low-med': 0x02, // P40
+            'medium': 0x03,  // P60
+            'med-high': 0x04,// P80
+            'high': 0x05,    // P100
+            'auto': 0x00,    // AUTO
         },
-        convertGet: async (entity, key, meta) => {
-            await entity.read('hvacFanCtrl', ['fanMode']);
+        reverseLookup: {
+            0x00: 'auto',     // AUTO
+            0x01: 'low',      // P20
+            0x02: 'low-med',  // P40
+            0x03: 'medium',   // P60
+            0x04: 'med-high', // P80
+            0x05: 'high',     // P100
+            0x06: 'quiet',    // SILENT
+            0x0D: 'quiet',    // TURBO (map to quiet for now)
         },
-    } satisfies Tz.Converter,
+    }) as Tz.Converter,
 };
 
 const fzLocal = {
@@ -165,10 +166,6 @@ const definition: DefinitionWithExtend = {
     vendor: 'Custom devices (DiY)',
     description: 'ACW02 HVAC Thermostat Controller via Zigbee (Router)',
     
-    meta: {
-        multiEndpoint: true,
-    },
-    
     // Supported features
     fromZigbee: [
         fzLocal.thermostat,   // Custom thermostat converter
@@ -208,20 +205,18 @@ const definition: DefinitionWithExtend = {
         e.switch().withEndpoint('mute').withDescription('Mute beep sounds on AC'),
     ],
     
-    // Map endpoints with descriptive names
-    endpoint: (device) => {
-        return {
-            'default': 1,          // Main thermostat
-            'eco_mode': 2,         // Eco mode switch
-            'swing_mode': 3,       // Swing switch
-            'display': 4,          // Display switch
-            'night_mode': 5,       // Night mode switch
-            'purifier': 6,         // Purifier switch
-            'clean_sensor': 7,     // Clean status binary sensor (read-only)
-            'mute': 8,             // Mute switch
-            'error_sensor': 9,     // Error status binary sensor (read-only)
-        };
-    },
+    // Map endpoints with descriptive names using m.deviceEndpoints
+    endpoint: m.deviceEndpoints({
+        default: 1,
+        eco_mode: 2,
+        swing_mode: 3,
+        display: 4,
+        night_mode: 5,
+        purifier: 6,
+        clean_sensor: 7,
+        mute: 8,
+        error_sensor: 9,
+    }),
     
     // Configure reporting - with REPORTING flag, most attributes auto-report!
     configure: async (device, coordinatorEndpoint, logger) => {
