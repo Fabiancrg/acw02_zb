@@ -786,7 +786,7 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  &error_status_on, false);
     
     /* Log error text when error/warning is active */
-    bool error_active = state.error || state.filter_dirty;
+    bool error_active = state.error || state.clean_status;
     if (error_active) {
         ESP_LOGW(TAG, "Error/Warning active: %s", state.error_text);
     }

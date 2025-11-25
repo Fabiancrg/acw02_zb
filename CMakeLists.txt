@@ -8,7 +8,7 @@ idf_build_set_property(MINIMAL_BUILD ON)
 
 # Version configuration
 set(PROJECT_VER "1.7")
-set(BUILD_NUMBER 10)
+set(BUILD_NUMBER 20)
 set(MANUFACTURER_CODE "0xFABC")
 set(IMAGE_TYPE "0x1000")
 set(ZIGBEE_STACK_VERSION "0x0003")  # Zigbee 3.0

@@ -63,7 +63,6 @@ typedef struct {
     bool clean_status;      // Filter cleaning status (read-only from AC)
     bool mute_on;           // Mute (silent commands)
     hvac_fan_t fan_speed;
-    bool filter_dirty;
     bool error;
     char error_text[64];
 } hvac_state_t;

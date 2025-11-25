@@ -149,7 +149,6 @@ static hvac_state_t current_state = {
     .clean_status = false,
     .mute_on = false,
     .fan_speed = HVAC_FAN_AUTO,
-    .filter_dirty = false,
     .error = false,
     .error_text = ""  // Empty string when no error
 };
@@ -411,10 +410,10 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
             snprintf(current_state.error_text, sizeof(current_state.error_text), 
                      "WARNING 0x%02X: %s", warn, warn_desc);
             if (warn == 0x80) {
-                current_state.filter_dirty = true;
+                current_state.clean_status = true;  // Filter needs cleaning
             }
         } else {
-            current_state.filter_dirty = false;
+            current_state.clean_status = false;  // No warnings - filter is clean
             current_state.error = false;
             current_state.error_text[0] = '\0';  // Empty string when no error
         }
