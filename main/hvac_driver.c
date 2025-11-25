@@ -513,7 +513,6 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         prev_state.swing_on != current_state.swing_on ||
         prev_state.mute_on != current_state.mute_on ||
         prev_state.error != current_state.error ||
-        prev_state.filter_dirty != current_state.filter_dirty ||
         strcmp(prev_state.error_text, current_state.error_text) != 0) {
         state_changed = true;
     }
