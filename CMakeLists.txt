@@ -54,16 +54,17 @@ find_package(Python3 REQUIRED)
 
 
 # Automatically generate Zigbee OTA image after .bin is created
+# Automatically generate Zigbee OTA image after .bin is created
 add_custom_target(generate_ota ALL
     COMMAND ${CMAKE_COMMAND} -E echo "================================================"
     COMMAND ${CMAKE_COMMAND} -E echo "Generating Zigbee OTA image:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Version: ${PROJECT_VER}.${BUILD_NUMBER} (0x${OTA_VERSION_HEX_STR}) (${OTA_VERSION_DEC})"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Version: ${PROJECT_VER}.${BUILD_NUMBER} - 0x${OTA_VERSION_HEX_STR} - ${OTA_VERSION_DEC}"
     COMMAND ${CMAKE_COMMAND} -E echo "  Manufacturer: ${MANUFACTURER_CODE}"
     COMMAND ${CMAKE_COMMAND} -E echo "  Image Type: ${IMAGE_TYPE}"
     COMMAND ${CMAKE_COMMAND} -E echo "  Stack Version: ${ZIGBEE_STACK_VERSION}"
     COMMAND ${CMAKE_COMMAND} -E echo "================================================"
     COMMAND ${Python3_EXECUTABLE} 
-            "C:/Devel/Repositories/esp-zigbee-sdk-main/tools/image_builder_tool/image_builder_tool.py"
+            "$ENV{HOME}/Repositories/esp-zigbee-sdk/tools/image_builder_tool/image_builder_tool.py"
             -f "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin"
             -c "${CMAKE_BINARY_DIR}/${PROJECT_NAME}_v${PROJECT_VER}.${BUILD_NUMBER}.ota"
             -m ${MANUFACTURER_CODE}
