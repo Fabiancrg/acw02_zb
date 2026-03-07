@@ -177,7 +177,6 @@ const definition = {
         fzLocal.error_text,
     ],
     toZigbee: [
-        tz.thermostat_local_temperature,
         tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
         tzLocal.fan_mode,

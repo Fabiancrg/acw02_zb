@@ -127,7 +127,6 @@ const definition: DefinitionWithExtend = {
         fzLocal.error_text,
     ],
     toZigbee: [
-        tz.thermostat_local_temperature,
         tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
         tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7

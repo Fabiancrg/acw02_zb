@@ -444,7 +444,10 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                                                  &temp_setpoint, true);
                     
                     // Send command to AC (UART callback will update again when AC confirms)
-                    hvac_set_temperature(temp_c);
+                    esp_err_t err = hvac_set_temperature(temp_c);
+                    if (err != ESP_OK) {
+                        ESP_LOGW(TAG, "hvac_set_temperature(%d) failed: %s", temp_c, esp_err_to_name(err));
+                    }
                 }
                 break;
                 
@@ -480,16 +483,20 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                     
                     // Map Zigbee system mode to HVAC mode and send command to AC
                     hvac_mode_t hvac_mode = HVAC_MODE_OFF;
+                    esp_err_t mode_err = ESP_OK;
                     switch (system_mode) {
-                        case 0x00: hvac_mode = HVAC_MODE_OFF; hvac_set_power(false); break;
-                        case 0x01: hvac_mode = HVAC_MODE_AUTO; hvac_set_mode(hvac_mode); break;
-                        case 0x03: hvac_mode = HVAC_MODE_COOL; hvac_set_mode(hvac_mode); break;
-                        case 0x04: hvac_mode = HVAC_MODE_HEAT; hvac_set_mode(hvac_mode); break;
-                        case 0x07: hvac_mode = HVAC_MODE_FAN; hvac_set_mode(hvac_mode); break;
-                        case 0x08: hvac_mode = HVAC_MODE_DRY; hvac_set_mode(hvac_mode); break;
+                        case 0x00: hvac_mode = HVAC_MODE_OFF; mode_err = hvac_set_power(false); break;
+                        case 0x01: hvac_mode = HVAC_MODE_AUTO; mode_err = hvac_set_mode(hvac_mode); break;
+                        case 0x03: hvac_mode = HVAC_MODE_COOL; mode_err = hvac_set_mode(hvac_mode); break;
+                        case 0x04: hvac_mode = HVAC_MODE_HEAT; mode_err = hvac_set_mode(hvac_mode); break;
+                        case 0x07: hvac_mode = HVAC_MODE_FAN; mode_err = hvac_set_mode(hvac_mode); break;
+                        case 0x08: hvac_mode = HVAC_MODE_DRY; mode_err = hvac_set_mode(hvac_mode); break;
                         default:
                             ESP_LOGW(TAG, "Unsupported system mode: %d", system_mode);
                             break;
+                    }
+                    if (mode_err != ESP_OK) {
+                        ESP_LOGW(TAG, "hvac_set_mode/power(%d) failed: %s", system_mode, esp_err_to_name(mode_err));
                     }
                     // UART callback will update again when AC confirms
                 }
@@ -513,7 +520,10 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 // Send command to AC (UART callback will update again when AC confirms)
                 hvac_fan_t hvac_fan = (hvac_fan_t)fan_mode;
                 ESP_LOGI(TAG, "Setting HVAC fan to: 0x%02X", hvac_fan);
-                hvac_set_fan_speed(hvac_fan);
+                esp_err_t fan_err = hvac_set_fan_speed(hvac_fan);
+                if (fan_err != ESP_OK) {
+                    ESP_LOGW(TAG, "hvac_set_fan_speed(0x%02X) failed: %s", hvac_fan, esp_err_to_name(fan_err));
+                }
             }
         }
     }
@@ -523,7 +533,10 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
                 bool on_off = *(bool *)message->attribute.data.value;
                 ESP_LOGI(TAG, "[ECO] Mode %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
-                hvac_set_eco_mode(on_off);
+                esp_err_t eco_err = hvac_set_eco_mode(on_off);
+                if (eco_err != ESP_OK) {
+                    ESP_LOGW(TAG, "hvac_set_eco_mode(%d) failed: %s", on_off, esp_err_to_name(eco_err));
+                }
                 /* Don't schedule update - UART callback will handle it when AC responds */
             }
         }

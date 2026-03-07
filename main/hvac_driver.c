@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -19,6 +20,9 @@ static const char *NVS_NAMESPACE = "hvac_storage";
 
 /* State change callback */
 static hvac_state_change_callback_t state_change_callback = NULL;
+
+/* Mutex protecting current_state across tasks */
+static SemaphoreHandle_t state_mutex = NULL;
 
 /* Error code mapping structure */
 typedef struct {
@@ -370,19 +374,23 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     }
     
     ESP_LOGI(TAG, "RX [%d bytes]: Valid frame received", len);
-    
+
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+
     // Handle 13-byte ACK frames from AC (acknowledgment of commands)
     // Frame structure: 7A 7A D1 21 0D 00 00 A4 0A 0A 00 CRC CRC
     if (len == 13 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD1 && frame[3] == 0x21) {
         ESP_LOGD(TAG, "ACK frame received from AC (13 bytes)");
         // This is just an acknowledgment, no state to decode
+        xSemaphoreGive(state_mutex);
         return;
     }
-    
+
     // Handle 18-byte frames (if they exist)
     if (len == 18 && frame[0] == 0x7A && frame[1] == 0x7A) {
         ESP_LOGD(TAG, "18-byte frame received (keepalive/other)");
         // Handle if needed in the future
+        xSemaphoreGive(state_mutex);
         return;
     }
     
@@ -395,34 +403,36 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
             // We only know that 0x04 = PC (Fashion Conflict)
             // All other fault codes are unknown
             current_state.error = true;
+            current_state.clean_status = false;
             if (fault == 0x04) {
                 ESP_LOGE(TAG, "AC FAULT: code=0x%02X - PC: Fashion Conflict", fault);
-                snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                snprintf(current_state.error_text, sizeof(current_state.error_text),
                          "FAULT 0x%02X: PC - Fashion Conflict", fault);
             } else {
                 ESP_LOGE(TAG, "AC FAULT: code=0x%02X - Unknown error", fault);
-                snprintf(current_state.error_text, sizeof(current_state.error_text), 
+                snprintf(current_state.error_text, sizeof(current_state.error_text),
                          "Error, check error code on the display");
             }
         } else if (warn != 0x00) {
             const char *warn_desc = hvac_decode_error_code(warn);
             ESP_LOGW(TAG, "AC WARNING: code=0x%02X - %s", warn, warn_desc);
-            snprintf(current_state.error_text, sizeof(current_state.error_text), 
+            current_state.error = false;
+            snprintf(current_state.error_text, sizeof(current_state.error_text),
                      "WARNING 0x%02X: %s", warn, warn_desc);
-            if (warn == 0x80) {
-                current_state.clean_status = true;  // Filter needs cleaning
-            }
+            current_state.clean_status = (warn == 0x80);  // Filter needs cleaning only for 0x80
         } else {
             current_state.clean_status = false;  // No warnings - filter is clean
             current_state.error = false;
             current_state.error_text[0] = '\0';  // Empty string when no error
         }
+        xSemaphoreGive(state_mutex);
         return;
     }
-    
+
     // Parse 34-byte status frames
     if (len != 34) {
         ESP_LOGW(TAG, "Unexpected frame length (expected 34 bytes, got %d)", len);
+        xSemaphoreGive(state_mutex);
         return;
     }
     
@@ -520,12 +530,13 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
     if (state_changed) {
         ESP_LOGI(TAG, "State change detected - notifying Zigbee");
         prev_state = current_state;  // Save current state for next comparison
-        
+        xSemaphoreGive(state_mutex);
         if (state_change_callback) {
             state_change_callback();
         }
     } else {
         ESP_LOGD(TAG, "No state change - skipping Zigbee update");
+        xSemaphoreGive(state_mutex);
     }
 }
 
@@ -767,7 +778,14 @@ static esp_err_t hvac_load_settings(void)
 esp_err_t hvac_driver_init(void)
 {
     ESP_LOGI(TAG, "[HVAC] Starting HVAC driver initialization");
-    
+
+    // Create state mutex
+    state_mutex = xSemaphoreCreateMutex();
+    if (state_mutex == NULL) {
+        ESP_LOGE(TAG, "[ERROR] Failed to create state mutex");
+        return ESP_FAIL;
+    }
+
     // Configure UART
     ESP_LOGI(TAG, "[HVAC] Configuring UART%d (TX=%d, RX=%d, baud=%d)", 
              HVAC_UART_NUM, HVAC_UART_TX_PIN, HVAC_UART_RX_PIN, HVAC_UART_BAUD_RATE);
@@ -846,8 +864,10 @@ esp_err_t hvac_get_state(hvac_state_t *state)
     if (!state) {
         return ESP_ERR_INVALID_ARG;
     }
-    
+
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     memcpy(state, &current_state, sizeof(hvac_state_t));
+    xSemaphoreGive(state_mutex);
     return ESP_OK;
 }
 
@@ -857,7 +877,9 @@ esp_err_t hvac_get_state(hvac_state_t *state)
 esp_err_t hvac_set_power(bool power_on)
 {
     ESP_LOGI(TAG, "Setting power: %s", power_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.power_on = power_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -868,10 +890,12 @@ esp_err_t hvac_set_power(bool power_on)
 esp_err_t hvac_set_mode(hvac_mode_t mode)
 {
     ESP_LOGI(TAG, "Setting mode: %d", mode);
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.mode = mode;
     if (mode != HVAC_MODE_OFF) {
         current_state.power_on = true;
     }
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -885,9 +909,11 @@ esp_err_t hvac_set_temperature(uint8_t temp_c)
         ESP_LOGW(TAG, "Temperature out of range: %d°C (valid: 16-31)", temp_c);
         return ESP_ERR_INVALID_ARG;
     }
-    
+
     ESP_LOGI(TAG, "Setting temperature: %d°C", temp_c);
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.target_temp_c = temp_c;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -898,14 +924,16 @@ esp_err_t hvac_set_temperature(uint8_t temp_c)
 esp_err_t hvac_set_eco_mode(bool eco_on)
 {
     ESP_LOGI(TAG, "Setting eco mode: %s", eco_on ? "ON" : "OFF");
-    current_state.eco_mode = eco_on;
-    
+
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     // Eco mode only works in COOL mode
     if (eco_on && current_state.mode != HVAC_MODE_COOL) {
+        xSemaphoreGive(state_mutex);
         ESP_LOGW(TAG, "Eco mode only available in COOL mode");
         return ESP_ERR_INVALID_STATE;
     }
-    
+    current_state.eco_mode = eco_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -916,7 +944,9 @@ esp_err_t hvac_set_eco_mode(bool eco_on)
 esp_err_t hvac_set_display(bool display_on)
 {
     ESP_LOGI(TAG, "Setting display: %s", display_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.display_on = display_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -927,7 +957,9 @@ esp_err_t hvac_set_display(bool display_on)
 esp_err_t hvac_set_swing(bool swing_on)
 {
     ESP_LOGI(TAG, "Setting swing: %s", swing_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.swing_on = swing_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -938,14 +970,14 @@ esp_err_t hvac_set_swing(bool swing_on)
 esp_err_t hvac_set_fan_speed(hvac_fan_t fan)
 {
     ESP_LOGI(TAG, "Setting fan speed: %d", fan);
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.fan_speed = fan;
-    
     // In eco mode, fan is forced to AUTO
     if (current_state.eco_mode) {
         ESP_LOGW(TAG, "Fan speed ignored in eco mode (forced to AUTO)");
         current_state.fan_speed = HVAC_FAN_AUTO;
     }
-    
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -974,7 +1006,9 @@ esp_err_t hvac_send_keepalive(void)
 esp_err_t hvac_set_night_mode(bool night_on)
 {
     ESP_LOGI(TAG, "Setting night mode: %s", night_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.night_mode = night_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -985,7 +1019,9 @@ esp_err_t hvac_set_night_mode(bool night_on)
 esp_err_t hvac_set_purifier(bool purifier_on)
 {
     ESP_LOGI(TAG, "Setting purifier: %s", purifier_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.purifier_on = purifier_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -996,7 +1032,9 @@ esp_err_t hvac_set_purifier(bool purifier_on)
 esp_err_t hvac_set_mute(bool mute_on)
 {
     ESP_LOGI(TAG, "Setting mute: %s", mute_on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.mute_on = mute_on;
+    xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return hvac_build_and_send_command();
 }
@@ -1006,7 +1044,10 @@ esp_err_t hvac_set_mute(bool mute_on)
  */
 bool hvac_get_clean_status(void)
 {
-    return current_state.clean_status;
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    bool status = current_state.clean_status;
+    xSemaphoreGive(state_mutex);
+    return status;
 }
 
 /**
