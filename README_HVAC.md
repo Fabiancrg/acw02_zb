@@ -75,7 +75,7 @@ acw02_zb/
 
 ## Building and Flashing
 
-1. Set up ESP-IDF v5.5.1 or later
+1. Set up ESP-IDF v5.5.3 or later
 2. Configure the project:
    ```bash
    idf.py set-target esp32c6
