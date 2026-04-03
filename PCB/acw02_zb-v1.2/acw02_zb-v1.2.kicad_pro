@@ -589,7 +589,7 @@
       "plot": "Gerber/",
       "pos_files": "Seeedstudio/",
       "specctra_dsn": "",
-      "step": "",
+      "step": "acw02_zb-v1.2.step",
       "svg": "",
       "vrml": ""
     },

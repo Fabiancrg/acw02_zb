@@ -1,0 +1,17 @@
+"Id";"Designator";"Footprint";"Quantity";"Designation";"Supplier and ref";
+1;"D1";"D_SMA";1;"SS34";;;
+2;"U1";"XIAO-ESP32C6-SMD";1;"XIAO-ESP32-S3-SMD";;;
+3;"R10,R11,R13,R9,R14,R8,R12,R6,R7,R3";"R_0805_2012Metric";10;"10K";;;
+4;"R1";"R_0805_2012Metric";1;"100K";;;
+5;"C6";"C_0805_2012Metric";1;"220pF";;;
+6;"C5,C3,C8";"C_1206_3216Metric";3;"100nF";;;
+7;"L1";"L_APV_APH0530";1;"10µH";;;
+8;"Q3,Q1,Q4,Q2";"SOT-23";4;"BSS138";;;
+9;"R5";"R_0805_2012Metric";1;"52.3K";;;
+10;"J6";"JST_SH_BM06B-SRSS-TB_1x06-1MP_P1.00mm_Vertical";1;"Conn_01x06_Pin";;;
+11;"U3";"SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm";1;"MP1584EN-LF-Z";;;
+12;"C2";"C_1206_3216Metric";1;"10µF-25V";;;
+13;"R4";"R_0805_2012Metric";1;"200K";;;
+14;"C7";"C_1206_3216Metric";1;"22µF-10V";;;
+15;"R2";"R_0805_2012Metric";1;"24.9K";;;
+16;"J1";"JST_XH_S4B-XH-A_1x04_P2.50mm_Horizontal";1;"Conn_01x04_Socket";;;
