@@ -41,6 +41,14 @@ ACW02-ZB is an open-source Zigbee-enabled HVAC controller for the Airton (to rep
 
 See the documentation files for advanced features, troubleshooting, and hardware details.
 
+### ZHA Support (untested)
+
+The device should also be compatible with **ZHA (Zigbee Home Automation)**. Because it uses standard Zigbee 3.0 clusters, core functionality (climate control, switches) works out of the box. A custom ZHA quirk (`acw02_zb.py`) is provided to handle the non-standard fan mode values and the full 9-endpoint structure.
+
+> **Warning:** ZHA support has **not been tested**. The quirk is provided as a best-effort implementation based on the device's Zigbee descriptor and firmware source. Feedback and contributions are welcome.
+
+> **Note:** Some features available in Zigbee2MQTT require additional HA automations under ZHA — see the [ZHA Integration Guide](ZHA_INTEGRATION_GUIDE.md) for installation steps, known limitations, and workarounds.
+
 ---
 
 ## PCB
