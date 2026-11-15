@@ -42,10 +42,15 @@ The device communicates with the HVAC unit using a proprietary protocol at 9600 
 
 All frames start with `0x7A 0x7A` and end with a 16-bit CRC.
 
-**Command Frame (28 bytes)**:
+**Command Frame (24 bytes)**:
 ```
-[0x7A][0x7A][Header][Mode][Temp][Fan][Swing][Options][...][CRC_H][CRC_L]
+[0x7A][0x7A][Header][Fan/Power/Mode][Temp][Swing][Options][Mute][...][CRC_H][CRC_L]
 ```
+
+- **Swing byte**: `(horizontal << 4) | vertical`. Vertical `0x0` = stop, `0x1` = swing, `0x2`–`0x6` = fixed positions.
+- **Temperature byte**: `°C − 16` (0x00–0x0F), or a table-encoded value when the AC is set to °F.
+
+The AC answers with a 13-byte ACK, a 34-byte status frame, or a 28-byte warning/fault frame.
 
 **Status Request (13 bytes)**:
 ```
@@ -102,7 +107,9 @@ The device is configured as a Zigbee End Device (ZED):
 
 ### HVAC Settings
 
-Temperature range: 16-31°C (mapped to 61-88°F internally)
+Temperature range: 16-31°C.
+
+If the AC's display unit is set to Fahrenheit (61-88°F), the driver detects it from the status frame, converts the setpoint to °C for Zigbee, and encodes commands back in °F so the unit chosen on the AC is kept.
 
 ### Joining the Network
 
@@ -159,17 +166,35 @@ The driver maintains a local copy of the HVAC state and synchronizes it with:
 2. Status responses received from the HVAC unit
 3. Zigbee attribute updates
 
+The AC is the source of truth:
+
+- **At boot** the driver does not send any command. It requests the AC's status and adopts it, so a module reboot (power glitch, OTA) never changes what the AC is doing. Settings are still saved to NVS (at most once every 15 minutes) but are only used until the first status frame arrives; the mute setting, which the AC does not report, is the one that effectively persists.
+- **Swing**: the switch maps to vertical swing (`0x1`). The horizontal swing and any fixed louvre position set from the IR remote are preserved when other settings are changed.
+- **Clean status** (endpoint 7) is ON when the AC reports the filter-cleaning warning, or while a self-clean cycle is running (only reported in cool or dry mode).
+
+### Command Confirmation and Retry
+
+All UART transmission is done by the HVAC task, one frame at a time:
+
+- A frame is sent only when the line has been quiet for 120 ms and at least 180 ms after the previous frame.
+- After a command, the next status frame is compared with what was requested. If the AC has not confirmed it within 300 ms, the command is re-sent, up to 3 times. Retries are sent with the mute bit set so the AC does not beep again.
+- If the AC still has not confirmed after the last retry (1.2 s), the driver gives up, requests the AC's real state and pushes it to Zigbee, so the coordinator shows what the AC actually did.
+- While a command is waiting or unconfirmed, status frames do not overwrite the requested state.
+- If a new command arrives before the previous one is confirmed, it replaces it (every frame carries the full state).
+
+Serial log lines to look for: `Command confirmed by AC after N ms`, `Command not confirmed - retry n/3`, `Command not confirmed after 4 tries - giving up, resyncing with AC`.
+
 ### Periodic Updates
 
-- **Status Request**: Every 30 seconds
-- **Keepalive**: Every 60 seconds
-- **Zigbee Sync**: After every state change + periodic updates
+- **Keepalive + status request**: every 30 seconds, started after joining or rejoining the Zigbee network
+- **Zigbee Sync**: after every state change reported by the AC
 
 ### Error Handling
 
 - CRC validation on all received frames
-- Retry logic for failed commands (future enhancement)
+- Command confirmation and retry (see above)
 - Error text attribute reports HVAC errors to coordinator
+- Requests the AC rejects (eco outside cool mode, fan speed while in eco) are corrected on the Zigbee side
 
 ## Troubleshooting
 
@@ -202,10 +227,12 @@ This code is based on Espressif's Zigbee examples and inherits their licensing.
 
 ## Future Enhancements
 
-- [ ] Add button for factory reset
-- [ ] Implement command retry logic
-- [ ] Add OTA firmware update support
+- [x] Add button for factory reset
+- [x] Implement command retry logic
+- [x] Add OTA firmware update support
+- [x] Add night mode support
+- [x] Implement filter status monitoring
+- [x] Detect Fahrenheit setpoints
 - [ ] Support horizontal swing control
-- [ ] Add night mode support
-- [ ] Implement filter status monitoring
-- [ ] Add clean mode support
+- [ ] Support fixed vertical louvre positions
+- [ ] Add clean mode support (start a self-clean cycle)

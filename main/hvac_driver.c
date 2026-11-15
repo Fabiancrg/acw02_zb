@@ -160,7 +160,40 @@ static hvac_state_t current_state = {
 /* UART buffer */
 static uint8_t rx_buffer[HVAC_UART_BUF_SIZE];
 static size_t rx_buffer_len = 0;
-static uint32_t last_rx_time = 0;
+static TickType_t last_rx_time = 0;
+
+/* Command transmit path (see hvac_tx_service). Timings follow the reference
+ * ESPHome implementation (devildant/acw02_esphome). */
+#define HVAC_CMD_FRAME_LEN       24
+#define HVAC_TX_INTERVAL_MS      180    // minimum gap between two transmitted frames
+#define HVAC_RX_SILENCE_MS       120    // line must be quiet this long before we transmit
+#define HVAC_ACK_EVAL_MIN_MS     50     // a status frame sooner than this cannot be a reply
+#define HVAC_ACK_RETRY_MS        300    // unconfirmed after this long -> re-send
+#define HVAC_ACK_ABORT_MS        1200   // after the last retry, give up after this long
+#define HVAC_CMD_MAX_RETRY       3
+#define HVAC_RX_STALE_MS         500    // drop partial RX data older than this
+
+typedef struct {
+    bool active;
+    uint8_t frame[HVAC_CMD_FRAME_LEN];
+    hvac_state_t expected;      // state the AC should report once it accepted the frame
+    uint8_t tries;              // retries already sent
+    TickType_t sent_at;
+} hvac_cmd_t;
+
+/* All of the following are protected by state_mutex */
+static hvac_cmd_t pending_cmd = {0};     // built, waiting for an idle line (latest wins)
+static hvac_cmd_t inflight_cmd = {0};    // transmitted, waiting for the AC to confirm
+static bool keepalive_pending = false;
+static bool status_pending = false;
+static bool force_notify = false;        // push state to Zigbee even if unchanged
+static TickType_t last_tx_time = 0;
+
+/* Protocol details the Zigbee layer does not see */
+static uint8_t swing_raw = 0x00;         // swing byte as last reported: (horizontal<<4) | vertical
+static bool use_fahrenheit = false;      // AC encodes its setpoint in Fahrenheit
+static bool filter_dirty = false;        // "CL" warning from a 28-byte frame
+static bool self_clean_active = false;   // self-clean bit from a status frame
 
 /* Delayed NVS write to reduce flash wear */
 static TimerHandle_t nvs_save_timer = NULL;
@@ -179,19 +212,11 @@ static const uint8_t get_status_frame[] = {
     0x0A, 0x0A, 0xFE, 0x29
 };
 
-/* Fahrenheit encoding table for temperatures 61-88°F */
-// static const uint8_t fahrenheit_encoding_table[] = { 
-//     0x20, 0x21, 0x31, 0x22, 0x32, 0x23, 0x33, 0x24, 0x25,
-//     0x35, 0x26, 0x36, 0x27, 0x37, 0x28, 0x38, 0x29, 0x2A, 
-//     0x3A, 0x2B, 0x3B, 0x2C, 0x3C, 0x2D, 0x3D, 0x2E, 0x2F, 
-//     0x3F
-// };
-
 /* Forward declarations */
 static uint16_t hvac_crc16(const uint8_t *data, size_t len);
 static uint8_t hvac_encode_temperature(uint8_t temp_c);
 static esp_err_t hvac_send_frame(const uint8_t *data, size_t len);
-static esp_err_t hvac_build_and_send_command(void);
+static void hvac_queue_command_locked(void);
 static void hvac_decode_state(const uint8_t *frame, size_t len);
 static void hvac_rx_task(void *arg);
 static esp_err_t hvac_save_settings_immediate(void);  // Actual NVS write
@@ -216,29 +241,56 @@ static uint16_t hvac_crc16(const uint8_t *data, size_t len)
     return crc;
 }
 
+/* Fahrenheit encoding table for setpoints 61-88 F (index = F - 61). The AC
+ * uses this encoding instead of "Celsius - 16" when its display unit is F. */
+static const uint8_t fahrenheit_encoding_table[28] = {
+    0x20, 0x21, 0x31, 0x22, 0x32, 0x23, 0x33, 0x24, 0x25,
+    0x35, 0x26, 0x36, 0x27, 0x37, 0x28, 0x38, 0x29, 0x2A,
+    0x3A, 0x2B, 0x3B, 0x2C, 0x3C, 0x2D, 0x3D, 0x2E, 0x2F,
+    0x3F
+};
+
+/**
+ * @brief Decode a Fahrenheit-encoded temperature byte
+ *
+ * @return the setpoint in F (61-88), or 0 if the byte is not Fahrenheit-encoded
+ */
+static uint8_t hvac_fahrenheit_from_byte(uint8_t temp_byte)
+{
+    for (size_t i = 0; i < sizeof(fahrenheit_encoding_table); i++) {
+        if (fahrenheit_encoding_table[i] == temp_byte) {
+            return (uint8_t)(61 + i);
+        }
+    }
+    return 0;
+}
+
 /**
  * @brief Encode temperature to HVAC format
- * 
- * IMPORTANT: The ACW02 appears to expect Celsius values directly, not Fahrenheit!
- * The encoding table was misleading - we should just send the Celsius value.
+ *
+ * Celsius (default): frame byte = temp_c - 16 (16-31 C -> 0x00-0x0F).
+ * Fahrenheit (when the AC reports its setpoint in F): table lookup, so the
+ * unit the user selected on the AC is preserved.
  */
 static uint8_t hvac_encode_temperature(uint8_t temp_c)
 {
     // Clamp temperature to valid range (16-31°C)
     if (temp_c < 16) temp_c = 16;
     if (temp_c > 31) temp_c = 31;
-    
-    /* ACW02 Protocol temperature encoding (Celsius only):
-     * - Frame byte value = actual_temp_celsius - 16
-     * - Example: 24°C → frame byte = 24-16 = 0x08
-     * - Range: 16-31°C → 0x00-0x0F in frame
-     */
+
+    if (use_fahrenheit) {
+        int temp_f = (temp_c * 9 + 2) / 5 + 32;  // rounded C -> F
+        if (temp_f < 61) temp_f = 61;
+        if (temp_f > 88) temp_f = 88;
+        return fahrenheit_encoding_table[temp_f - 61];
+    }
+
     return temp_c - 16;
 }
 
 /**
- * @brief Build HVAC command frame
- * 
+ * @brief Build an HVAC command frame from a state
+ *
  * ACW02 Protocol Frame Structure (24 bytes):
  * [0-1]  Header: 0x7A 0x7A
  * [2-7]  Header: 0x21 0xD5 0x18 0x00 0x00 0xA1
@@ -251,10 +303,10 @@ static uint8_t hvac_encode_temperature(uint8_t temp_c)
  * [17-21] Reserved: 0x00
  * [22-23] CRC16: MSB, LSB (computed over first 22 bytes)
  */
-static esp_err_t hvac_build_and_send_command(void)
+static void hvac_build_frame(const hvac_state_t *st, uint8_t frame[HVAC_CMD_FRAME_LEN])
 {
-    uint8_t frame[24] = {0};
-    
+    memset(frame, 0, HVAC_CMD_FRAME_LEN);
+
     // Frame header (bytes 0-7)
     frame[0] = 0x7A;
     frame[1] = 0x7A;
@@ -264,48 +316,55 @@ static esp_err_t hvac_build_and_send_command(void)
     frame[5] = 0x00;
     frame[6] = 0x00;
     frame[7] = 0xA1;  // Command type for control frame
-    
-    // Bytes 8-11 are reserved (already zeroed)
-    
+
     // Byte 12: Pack fan (4 bits), power (1 bit), mode (3 bits)
-    uint8_t fan_nibble = ((uint8_t)current_state.fan_speed & 0x0F) << 4;
-    uint8_t power_bit = (current_state.power_on ? 1 : 0) << 3;
-    uint8_t mode_bits = (uint8_t)current_state.mode & 0x07;
+    uint8_t fan_nibble = ((uint8_t)st->fan_speed & 0x0F) << 4;
+    uint8_t power_bit = (st->power_on ? 1 : 0) << 3;
+    uint8_t mode_bits = (uint8_t)st->mode & 0x07;
     frame[12] = fan_nibble | power_bit | mode_bits;
-    
+
     // Byte 13: Temperature encoding (with SILENT bit if needed)
-    uint8_t temp_base = hvac_encode_temperature(current_state.target_temp_c);
-    if (current_state.fan_speed == HVAC_FAN_SILENT) {
-        frame[13] = temp_base + 0x40;  // Add SILENT bit
-    } else {
-        frame[13] = temp_base;
-    }
-    
-    // Byte 14: Swing (horizontal in upper nibble, vertical in lower nibble)
-    uint8_t swing_v = current_state.swing_on ? 0x07 : 0x00;  // 0x07 = auto swing
-    uint8_t swing_h = 0x00;  // Horizontal swing (not used for now)
-    frame[14] = (swing_h << 4) | swing_v;
-    
+    uint8_t temp_base = hvac_encode_temperature(st->target_temp_c);
+    frame[13] = (st->fan_speed == HVAC_FAN_SILENT) ? (temp_base + 0x40) : temp_base;
+
+    // Byte 14: Swing. Sent as last reported by the AC (horizontal nibble and
+    // any fixed vertical position are preserved); hvac_set_swing() only
+    // switches the vertical nibble between STOP (0x0) and SWING (0x1).
+    frame[14] = swing_raw;
+
     // Byte 15: Options byte
     uint8_t options = 0x00;
-    if (current_state.eco_mode) options |= 0x01;      // Bit 0: ECO mode
-    if (current_state.night_mode) options |= 0x02;    // Bit 1: NIGHT mode
+    if (st->eco_mode) options |= 0x01;      // Bit 0: ECO mode
+    if (st->night_mode) options |= 0x02;    // Bit 1: NIGHT mode
     // clean mode: bit 0x10 (READ from AC, not sent TO AC)
-    if (current_state.purifier_on) options |= 0x40;   // Bit 6: PURIFIER mode
-    if (current_state.display_on) options |= 0x80;    // Bit 7: DISPLAY on/off
+    if (st->purifier_on) options |= 0x40;   // Bit 6: PURIFIER mode
+    if (st->display_on) options |= 0x80;    // Bit 7: DISPLAY on/off
     frame[15] = options;
-    
+
     // Byte 16: Mute
-    frame[16] = current_state.mute_on ? 0x01 : 0x00;  // Bit 0: MUTE (silent command)
-    
-    // Bytes 17-21 are reserved (already zeroed)
-    
+    frame[16] = st->mute_on ? 0x01 : 0x00;  // Bit 0: MUTE (silent command)
+
     // Calculate CRC over first 22 bytes
     uint16_t crc = hvac_crc16(frame, 22);
     frame[22] = (crc >> 8) & 0xFF;  // CRC MSB
     frame[23] = crc & 0xFF;          // CRC LSB
-    
-    return hvac_send_frame(frame, sizeof(frame));
+}
+
+/**
+ * @brief Queue a command built from current_state (caller holds state_mutex)
+ *
+ * The frame is snapshotted now and transmitted by the HVAC task once the line
+ * is idle. Only the latest command is kept: every frame carries the full
+ * state, so a newer one supersedes anything still waiting or unconfirmed.
+ * Until the AC confirms it, incoming status frames are not allowed to
+ * overwrite current_state (see hvac_decode_state).
+ */
+static void hvac_queue_command_locked(void)
+{
+    hvac_build_frame(&current_state, pending_cmd.frame);
+    pending_cmd.expected = current_state;
+    pending_cmd.tries = 0;
+    pending_cmd.active = true;
 }
 
 /**
@@ -331,8 +390,8 @@ static esp_err_t hvac_send_frame(const uint8_t *data, size_t len)
 }
 
 /**
- * @brief Decode received HVAC state frame
- * 
+ * @brief Parse a 34-byte status frame into a state struct
+ *
  * ACW02 responds with 34-byte status frames:
  * [0-1]  Header: 0x7A 0x7A
  * [2-3]  Type marker: 0xD5 0x21 (status response)
@@ -342,6 +401,126 @@ static esp_err_t hvac_send_frame(const uint8_t *data, size_t len)
  * [15]   Swing: (horizontal<<4) | vertical
  * [16]   Options: eco(0x01) | night(0x02) | from_remote(0x04) | display(0x08) | clean(0x10) | purifier(0x40) | display(0x80)
  * [32-33] CRC16
+ *
+ * Only the fields carried by the frame are written to *st.
+ */
+static void hvac_parse_status(const uint8_t *frame, hvac_state_t *st, uint8_t *swing_byte,
+                              bool *fahrenheit, bool *self_clean, bool *from_remote)
+{
+    // Ambient temperature (bytes 10-11)
+    st->ambient_temp_c = (float)frame[10] + ((float)frame[11] / 10.0f);
+
+    // Byte 13: Power, Mode, Fan
+    uint8_t b13 = frame[13];
+    st->power_on = (b13 & 0x08) != 0;
+    st->mode = (hvac_mode_t)(b13 & 0x07);
+    st->fan_speed = (hvac_fan_t)((b13 >> 4) & 0x0F);
+
+    // Byte 14: Temperature (with SILENT bit in bit 6)
+    uint8_t temp_byte = frame[14];
+    bool silent_bit = (temp_byte & 0x40) != 0;
+    temp_byte &= 0x3F;
+
+    /* Celsius: 0-15 -> 16-31 C. Fahrenheit: table-encoded 61-88 F (the AC
+     * display unit was switched to F); converted to Celsius for Zigbee. */
+    uint8_t temp_f = hvac_fahrenheit_from_byte(temp_byte);
+    if (temp_f != 0) {
+        int temp_c = ((temp_f - 32) * 5 + 4) / 9;  // rounded F -> C
+        if (temp_c < 16) temp_c = 16;
+        if (temp_c > 31) temp_c = 31;
+        st->target_temp_c = (uint8_t)temp_c;
+        *fahrenheit = true;
+    } else if (temp_byte <= 15) {
+        st->target_temp_c = 16 + temp_byte;
+        *fahrenheit = false;
+    } else {
+        ESP_LOGW(TAG, "Unexpected temperature byte 0x%02X - keeping previous setpoint", temp_byte);
+        *fahrenheit = use_fahrenheit;
+    }
+
+    // SILENT is signalled by the temperature byte, not the fan nibble
+    if (silent_bit) {
+        st->fan_speed = HVAC_FAN_SILENT;
+    }
+
+    // Byte 15: Swing. Only vertical "SWING" (0x1) counts as on; 0x2-0x6 are
+    // fixed louvre positions.
+    *swing_byte = frame[15];
+    st->swing_on = ((frame[15] & 0x0F) == HVAC_SWING_AUTO);
+
+    // Byte 16: Options
+    uint8_t flags = frame[16];
+    st->eco_mode = (flags & 0x01) != 0;       // Bit 0: ECO mode
+    st->night_mode = (flags & 0x02) != 0;     // Bit 1: NIGHT mode
+    st->purifier_on = (flags & 0x40) != 0;    // Bit 6: PURIFIER mode
+    st->display_on = (flags & 0x80) != 0;     // Bit 7: DISPLAY on/off
+
+    // Bit 4 (self-clean) is only meaningful in COOL or DRY mode
+    *self_clean = ((flags & 0x10) != 0) &&
+                  (st->mode == HVAC_MODE_COOL || st->mode == HVAC_MODE_DRY);
+
+    // Set when the reported state comes from the IR remote, not from us
+    *from_remote = ((flags & 0x04) != 0) || (st->display_on && (flags & 0x08) != 0);
+}
+
+/**
+ * @brief Does a reported state confirm the command we sent?
+ */
+static bool hvac_status_matches(const hvac_state_t *expected, const hvac_state_t *st)
+{
+    if (!expected->power_on) {
+        // The AC clears options on its own when switched off - only power matters
+        return !st->power_on;
+    }
+    if (!st->power_on || expected->mode != st->mode) {
+        return false;
+    }
+    // In AUTO mode the AC picks its own setpoint
+    if (expected->mode != HVAC_MODE_AUTO && expected->target_temp_c != st->target_temp_c) {
+        return false;
+    }
+    return expected->fan_speed == st->fan_speed &&
+           expected->swing_on == st->swing_on &&
+           expected->eco_mode == st->eco_mode &&
+           expected->night_mode == st->night_mode &&
+           expected->purifier_on == st->purifier_on &&
+           expected->display_on == st->display_on;
+}
+
+/**
+ * @brief Has current_state changed since the Zigbee layer was last notified?
+ *
+ * Caller holds state_mutex. Records the new state when it returns true.
+ */
+static bool hvac_state_changed_locked(void)
+{
+    static hvac_state_t prev_state = {0};
+
+    bool changed = force_notify ||
+        prev_state.power_on != current_state.power_on ||
+        prev_state.mode != current_state.mode ||
+        prev_state.fan_speed != current_state.fan_speed ||
+        prev_state.target_temp_c != current_state.target_temp_c ||
+        prev_state.ambient_temp_c != current_state.ambient_temp_c ||
+        prev_state.eco_mode != current_state.eco_mode ||
+        prev_state.night_mode != current_state.night_mode ||
+        prev_state.display_on != current_state.display_on ||
+        prev_state.purifier_on != current_state.purifier_on ||
+        prev_state.clean_status != current_state.clean_status ||
+        prev_state.swing_on != current_state.swing_on ||
+        prev_state.mute_on != current_state.mute_on ||
+        prev_state.error != current_state.error ||
+        strcmp(prev_state.error_text, current_state.error_text) != 0;
+
+    if (changed) {
+        prev_state = current_state;
+        force_notify = false;
+    }
+    return changed;
+}
+
+/**
+ * @brief Decode a received, CRC-valid HVAC frame
  */
 static void hvac_decode_state(const uint8_t *frame, size_t len)
 {
@@ -349,13 +528,7 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         ESP_LOGW(TAG, "Frame too short: %d bytes", len);
         return;
     }
-    
-    // Verify header
-    if (frame[0] != 0x7A || frame[1] != 0x7A) {
-        ESP_LOGW(TAG, "Invalid frame header");
-        return;
-    }
-    
+
     // Log full frame in hex for debugging
     char hex_str[256] = {0};
     char *ptr = hex_str;
@@ -363,47 +536,32 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         ptr += sprintf(ptr, "%02X ", frame[i]);
     }
     ESP_LOGI(TAG, "RX [%d bytes]: %s", len, hex_str);
-    
-    // Verify CRC
-    uint16_t expected_crc = (frame[len - 2] << 8) | frame[len - 1];
-    uint16_t computed_crc = hvac_crc16(frame, len - 2);
-    
-    if (expected_crc != computed_crc) {
-        ESP_LOGW(TAG, "CRC mismatch: expected 0x%04X, got 0x%04X", expected_crc, computed_crc);
+
+    // 13-byte ACK frames: 7A 7A D1 21 0D 00 00 A4 0A 0A 00 CRC CRC - no state
+    if (len == 13) {
+        ESP_LOGD(TAG, "ACK frame received from AC (13 bytes)");
         return;
     }
-    
-    ESP_LOGI(TAG, "RX [%d bytes]: Valid frame received", len);
+
+    // 18-byte frames (keepalive/other) - nothing to decode
+    if (len == 18) {
+        ESP_LOGD(TAG, "18-byte frame received (keepalive/other)");
+        return;
+    }
+
+    bool notify = false;
 
     xSemaphoreTake(state_mutex, portMAX_DELAY);
 
-    // Handle 13-byte ACK frames from AC (acknowledgment of commands)
-    // Frame structure: 7A 7A D1 21 0D 00 00 A4 0A 0A 00 CRC CRC
-    if (len == 13 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD1 && frame[3] == 0x21) {
-        ESP_LOGD(TAG, "ACK frame received from AC (13 bytes)");
-        // This is just an acknowledgment, no state to decode
-        xSemaphoreGive(state_mutex);
-        return;
-    }
-
-    // Handle 18-byte frames (if they exist)
-    if (len == 18 && frame[0] == 0x7A && frame[1] == 0x7A) {
-        ESP_LOGD(TAG, "18-byte frame received (keepalive/other)");
-        // Handle if needed in the future
-        xSemaphoreGive(state_mutex);
-        return;
-    }
-    
-    // Handle 28-byte warning/error frames
-    if (len == 28 && frame[0] == 0x7A && frame[1] == 0x7A && frame[2] == 0xD5 && frame[3] == 0x21) {
+    if (len == 28 && frame[2] == 0xD5 && frame[3] == 0x21) {
+        // Warning/error frame
         uint8_t warn = frame[10];
         uint8_t fault = frame[12];
-        
+
         if (fault != 0x00) {
             // We only know that 0x04 = PC (Fashion Conflict)
-            // All other fault codes are unknown
             current_state.error = true;
-            current_state.clean_status = false;
+            filter_dirty = false;
             if (fault == 0x04) {
                 ESP_LOGE(TAG, "AC FAULT: code=0x%02X - PC: Fashion Conflict", fault);
                 snprintf(current_state.error_text, sizeof(current_state.error_text),
@@ -419,135 +577,161 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
             current_state.error = false;
             snprintf(current_state.error_text, sizeof(current_state.error_text),
                      "WARNING 0x%02X: %s", warn, warn_desc);
-            current_state.clean_status = (warn == 0x80);  // Filter needs cleaning only for 0x80
+            filter_dirty = (warn == 0x80);  // Filter needs cleaning only for 0x80
         } else {
-            current_state.clean_status = false;  // No warnings - filter is clean
+            filter_dirty = false;
             current_state.error = false;
             current_state.error_text[0] = '\0';  // Empty string when no error
         }
-        xSemaphoreGive(state_mutex);
-        return;
+        current_state.clean_status = filter_dirty || self_clean_active;
+        notify = hvac_state_changed_locked();
+
+    } else if (len == 34) {
+        hvac_state_t st = current_state;  // keeps the fields a status frame does not carry
+        uint8_t swing_byte = 0;
+        bool fahrenheit = false, self_clean = false, from_remote = false;
+
+        hvac_parse_status(frame, &st, &swing_byte, &fahrenheit, &self_clean, &from_remote);
+
+        ESP_LOGI(TAG, "Status: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C%s, Ambient=%.1f°C, Origin=%s",
+                 st.power_on ? "ON" : "OFF", st.mode, st.fan_speed, st.target_temp_c,
+                 fahrenheit ? " (AC in °F)" : "", st.ambient_temp_c,
+                 from_remote ? "remote" : "module");
+        ESP_LOGI(TAG, "  Options: Eco=%s, Night=%s, Display=%s, Purifier=%s, SelfClean=%s, Swing=0x%02X",
+                 st.eco_mode ? "ON" : "OFF", st.night_mode ? "ON" : "OFF",
+                 st.display_on ? "ON" : "OFF", st.purifier_on ? "ON" : "OFF",
+                 self_clean ? "YES" : "NO", swing_byte);
+
+        /* While a command is waiting to be sent or to be confirmed, the AC's
+         * report may still describe the state from before that command. Taking
+         * it would silently undo what the user just asked for, so it is only
+         * accepted once it confirms the command (or the command is abandoned,
+         * see hvac_tx_service). */
+        bool apply = true;
+
+        if (pending_cmd.active) {
+            ESP_LOGD(TAG, "Status ignored - a command is waiting to be sent");
+            apply = false;
+        } else if (inflight_cmd.active) {
+            TickType_t dt = xTaskGetTickCount() - inflight_cmd.sent_at;
+            if (dt < pdMS_TO_TICKS(HVAC_ACK_EVAL_MIN_MS)) {
+                ESP_LOGD(TAG, "Status ignored - too early to be a reply to the command");
+                apply = false;
+            } else if (!from_remote && hvac_status_matches(&inflight_cmd.expected, &st)) {
+                ESP_LOGI(TAG, "Command confirmed by AC after %lu ms (try %d)",
+                         (unsigned long)pdTICKS_TO_MS(dt), inflight_cmd.tries + 1);
+                inflight_cmd.active = false;
+            } else {
+                ESP_LOGW(TAG, "Status does not confirm the command yet (try %d/%d)",
+                         inflight_cmd.tries + 1, HVAC_CMD_MAX_RETRY + 1);
+                apply = false;
+            }
+        }
+
+        if (apply) {
+            current_state = st;
+            swing_raw = swing_byte;
+            use_fahrenheit = fahrenheit;
+            self_clean_active = self_clean;
+            current_state.clean_status = filter_dirty || self_clean_active;
+        } else {
+            // The room temperature is always safe to take
+            current_state.ambient_temp_c = st.ambient_temp_c;
+        }
+        notify = hvac_state_changed_locked();
+
+    } else {
+        ESP_LOGW(TAG, "Unexpected frame length %d", len);
     }
 
-    // Parse 34-byte status frames
-    if (len != 34) {
-        ESP_LOGW(TAG, "Unexpected frame length (expected 34 bytes, got %d)", len);
-        xSemaphoreGive(state_mutex);
-        return;
-    }
-    
-    ESP_LOGI(TAG, "Parsing 34-byte status frame...");
-    
-    // Parse ambient temperature (bytes 10-11)
-    uint8_t temp_int = frame[10];
-    uint8_t temp_dec = frame[11];
-    
-    // Calculate with explicit types to avoid truncation
-    current_state.ambient_temp_c = (float)temp_int + ((float)temp_dec / 10.0f);
-    
-    // Byte 13: Power, Mode, Fan
-    uint8_t b13 = frame[13];
-    current_state.power_on = (b13 & 0x08) != 0;
-    current_state.mode = (hvac_mode_t)(b13 & 0x07);
-    current_state.fan_speed = (hvac_fan_t)((b13 >> 4) & 0x0F);
-    
-    // Byte 14: Temperature (with SILENT bit in bit 6)
-    uint8_t temp_byte = frame[14];
-    bool silent_bit = (temp_byte & 0x40) != 0;
-    temp_byte &= 0x3F;  // Mask to get 6-bit temperature value (0-63 range)
-    
-    /* Temperature encoding (Celsius only - ACW02 protocol):
-     * - Frame byte value: 0-15 represents temperatures 16-31°C
-     * - Formula: actual_temp_celsius = frame_value + 16
-     * - Example: frame=0x00 → 16°C, frame=0x0F → 31°C
-     * 
-     * Note: Fahrenheit uses special encoding table (not implemented - AC typically in Celsius)
-     */
-    if (temp_byte <= 15) {
-        current_state.target_temp_c = 16 + temp_byte;  // 0-15 → 16-31°C
-    } else {
-        // Value out of normal Celsius range - clamp to valid range
-        ESP_LOGW(TAG, "Unexpected temperature byte value: 0x%02X (expected 0-15), clamping", temp_byte);
-        current_state.target_temp_c = (temp_byte > 15) ? 31 : 16;
-    }
-    
-    ESP_LOGD(TAG, "Temperature: frame_byte=0x%02X, decoded=%d°C", temp_byte, current_state.target_temp_c);
-    
-    // Override fan if SILENT bit is set
-    if (silent_bit) {
-        current_state.fan_speed = HVAC_FAN_SILENT;
-    }
-    
-    // Byte 15: Swing
-    uint8_t swing_raw = frame[15];
-    uint8_t swing_v = swing_raw & 0x0F;
-    current_state.swing_on = (swing_v != 0);
-    
-    // Byte 16: Options
-    uint8_t flags = frame[16];
-    current_state.eco_mode = (flags & 0x01) != 0;       // Bit 0: ECO mode
-    current_state.night_mode = (flags & 0x02) != 0;     // Bit 1: NIGHT mode
-    current_state.clean_status = (flags & 0x10) != 0;   // Bit 4: CLEAN status (from AC)
-    current_state.purifier_on = (flags & 0x40) != 0;    // Bit 6: PURIFIER mode
-    current_state.display_on = (flags & 0x80) != 0;     // Bit 7: DISPLAY on/off
-    
-    ESP_LOGI(TAG, "Decoded state: Power=%s, Mode=%d, Fan=0x%02X, Temp=%d°C, Ambient=%.1f°C", 
-             current_state.power_on ? "ON" : "OFF",
-             current_state.mode,
-             current_state.fan_speed,
-             current_state.target_temp_c,
-             current_state.ambient_temp_c);
-    ESP_LOGI(TAG, "  Options: Eco=%s, Night=%s, Display=%s, Purifier=%s, Clean=%s, Swing=%s", 
-             current_state.eco_mode ? "ON" : "OFF",
-             current_state.night_mode ? "ON" : "OFF",
-             current_state.display_on ? "ON" : "OFF",
-             current_state.purifier_on ? "ON" : "OFF",
-             current_state.clean_status ? "YES" : "NO",
-             current_state.swing_on ? "ON" : "OFF");
-    
-    /* Notify Zigbee layer only if state actually changed (prevents excessive Zigbee traffic) */
-    static hvac_state_t prev_state = {0};
-    bool state_changed = false;
-    
-    // Check if any relevant state has changed
-    if (prev_state.power_on != current_state.power_on ||
-        prev_state.mode != current_state.mode ||
-        prev_state.fan_speed != current_state.fan_speed ||
-        prev_state.target_temp_c != current_state.target_temp_c ||
-        prev_state.ambient_temp_c != current_state.ambient_temp_c ||
-        prev_state.eco_mode != current_state.eco_mode ||
-        prev_state.night_mode != current_state.night_mode ||
-        prev_state.display_on != current_state.display_on ||
-        prev_state.purifier_on != current_state.purifier_on ||
-        prev_state.clean_status != current_state.clean_status ||
-        prev_state.swing_on != current_state.swing_on ||
-        prev_state.mute_on != current_state.mute_on ||
-        prev_state.error != current_state.error ||
-        strcmp(prev_state.error_text, current_state.error_text) != 0) {
-        state_changed = true;
-    }
-    
-    if (state_changed) {
+    xSemaphoreGive(state_mutex);
+
+    if (notify) {
         ESP_LOGI(TAG, "State change detected - notifying Zigbee");
-        prev_state = current_state;  // Save current state for next comparison
-        xSemaphoreGive(state_mutex);
         if (state_change_callback) {
             state_change_callback();
         }
-    } else {
-        ESP_LOGD(TAG, "No state change - skipping Zigbee update");
-        xSemaphoreGive(state_mutex);
     }
 }
 
 /**
- * @brief UART receive task
+ * @brief Transmit side of the HVAC task
+ *
+ * All UART writes happen here, one frame at a time, only when the line has
+ * been quiet for HVAC_RX_SILENCE_MS and HVAC_TX_INTERVAL_MS has passed since
+ * the previous frame. A command stays "in flight" until a status frame
+ * confirms it; if none does within HVAC_ACK_RETRY_MS it is re-sent (muted, so
+ * the AC does not beep again) up to HVAC_CMD_MAX_RETRY times, then abandoned
+ * and the real AC state is fetched so Zigbee shows what the AC actually did.
+ */
+static void hvac_tx_service(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    bool retry_due = false;
+
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+
+    if (inflight_cmd.active && !pending_cmd.active) {
+        TickType_t dt = now - inflight_cmd.sent_at;
+        if (inflight_cmd.tries < HVAC_CMD_MAX_RETRY) {
+            retry_due = (dt >= pdMS_TO_TICKS(HVAC_ACK_RETRY_MS));
+        } else if (dt >= pdMS_TO_TICKS(HVAC_ACK_ABORT_MS)) {
+            ESP_LOGE(TAG, "Command not confirmed after %d tries - giving up, resyncing with AC",
+                     inflight_cmd.tries + 1);
+            inflight_cmd.active = false;
+            status_pending = true;   // fetch what the AC really has
+            force_notify = true;     // and push it to Zigbee even if unchanged
+        }
+    }
+
+    bool line_idle = (rx_buffer_len == 0) &&
+                     (now - last_rx_time) >= pdMS_TO_TICKS(HVAC_RX_SILENCE_MS) &&
+                     (now - last_tx_time) >= pdMS_TO_TICKS(HVAC_TX_INTERVAL_MS);
+
+    if (line_idle) {
+        if (pending_cmd.active) {
+            // A newer command supersedes whatever was still unconfirmed
+            inflight_cmd = pending_cmd;
+            pending_cmd.active = false;
+            inflight_cmd.sent_at = now;
+            last_tx_time = now;
+            hvac_send_frame(inflight_cmd.frame, HVAC_CMD_FRAME_LEN);
+        } else if (retry_due) {
+            // Mute the retry and fix the CRC
+            inflight_cmd.frame[16] |= 0x01;
+            uint16_t crc = hvac_crc16(inflight_cmd.frame, 22);
+            inflight_cmd.frame[22] = (crc >> 8) & 0xFF;
+            inflight_cmd.frame[23] = crc & 0xFF;
+            inflight_cmd.tries++;
+            inflight_cmd.sent_at = now;
+            last_tx_time = now;
+            ESP_LOGW(TAG, "Command not confirmed - retry %d/%d", inflight_cmd.tries, HVAC_CMD_MAX_RETRY);
+            hvac_send_frame(inflight_cmd.frame, HVAC_CMD_FRAME_LEN);
+        } else if (!inflight_cmd.active) {
+            // Keepalive / status poll only when no command is being confirmed
+            if (keepalive_pending) {
+                keepalive_pending = false;
+                last_tx_time = now;
+                hvac_send_frame(keepalive_frame, sizeof(keepalive_frame));
+            } else if (status_pending) {
+                status_pending = false;
+                last_tx_time = now;
+                hvac_send_frame(get_status_frame, sizeof(get_status_frame));
+            }
+        }
+    }
+
+    xSemaphoreGive(state_mutex);
+}
+
+/**
+ * @brief HVAC task: UART receive + paced transmit
  */
 static void hvac_rx_task(void *arg)
 {
     static const size_t VALID_SIZES[] = {13, 18, 28, 34};
     static const size_t NUM_VALID_SIZES = sizeof(VALID_SIZES) / sizeof(VALID_SIZES[0]);
-    
+
     while (1) {
         // Safety check: ensure buffer has space
         size_t space_available = HVAC_UART_BUF_SIZE - rx_buffer_len;
@@ -556,10 +740,10 @@ static void hvac_rx_task(void *arg)
             rx_buffer_len = 0;
             space_available = HVAC_UART_BUF_SIZE;
         }
-        
-        int len = uart_read_bytes(HVAC_UART_NUM, rx_buffer + rx_buffer_len, 
+
+        int len = uart_read_bytes(HVAC_UART_NUM, rx_buffer + rx_buffer_len,
                                   space_available, 20 / portTICK_PERIOD_MS);
-        
+
         if (len > 0) {
             rx_buffer_len += len;
             last_rx_time = xTaskGetTickCount();
@@ -569,28 +753,28 @@ static void hvac_rx_task(void *arg)
             uart_flush_input(HVAC_UART_NUM);
             rx_buffer_len = 0;
         }
-        
+
         // Process buffer if we have data and silence period
         if (rx_buffer_len > 0 && (xTaskGetTickCount() - last_rx_time) > pdMS_TO_TICKS(10)) {
             size_t offset = 0;
-            
+
             while (offset < rx_buffer_len && rx_buffer_len - offset >= 13) {
                 bool found = false;
-                
+
                 for (size_t i = 0; i < NUM_VALID_SIZES; i++) {
                     size_t frame_size = VALID_SIZES[i];
-                    
+
                     if (offset + frame_size > rx_buffer_len) {
                         continue;
                     }
-                    
+
                     // Check for valid frame header
                     if (rx_buffer[offset] == 0x7A && rx_buffer[offset + 1] == 0x7A) {
                         // Verify CRC
-                        uint16_t expected_crc = (rx_buffer[offset + frame_size - 2] << 8) | 
+                        uint16_t expected_crc = (rx_buffer[offset + frame_size - 2] << 8) |
                                                 rx_buffer[offset + frame_size - 1];
                         uint16_t computed_crc = hvac_crc16(&rx_buffer[offset], frame_size - 2);
-                        
+
                         if (expected_crc == computed_crc) {
                             // Valid frame found
                             hvac_decode_state(&rx_buffer[offset], frame_size);
@@ -600,25 +784,29 @@ static void hvac_rx_task(void *arg)
                         }
                     }
                 }
-                
+
                 if (!found) {
                     offset++;
                 }
             }
-            
+
             // Remove processed bytes
             if (offset > 0) {
                 memmove(rx_buffer, rx_buffer + offset, rx_buffer_len - offset);
                 rx_buffer_len -= offset;
             }
-            
-            // Additional safety: prevent buffer overflow
-            if (rx_buffer_len > HVAC_UART_BUF_SIZE - 64) {
-                ESP_LOGW(TAG, "HVAC RX buffer unexpectedly full (%zu bytes), resetting", rx_buffer_len);
+
+            // Leftover bytes that never completed a frame would block the
+            // transmitter forever (it waits for an empty RX buffer) - drop them.
+            if (rx_buffer_len > 0 &&
+                (xTaskGetTickCount() - last_rx_time) > pdMS_TO_TICKS(HVAC_RX_STALE_MS)) {
+                ESP_LOGW(TAG, "Discarding %zu stale RX bytes", rx_buffer_len);
                 rx_buffer_len = 0;
             }
         }
-        
+
+        hvac_tx_service();
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -650,17 +838,19 @@ static esp_err_t hvac_save_settings_immediate(void)
         return err;
     }
     
-    // Save all settings
-    nvs_set_u8(nvs_handle, "mode", (uint8_t)current_state.mode);
-    nvs_set_u8(nvs_handle, "power", current_state.power_on ? 1 : 0);
-    nvs_set_u8(nvs_handle, "temp", current_state.target_temp_c);
-    nvs_set_u8(nvs_handle, "fan", (uint8_t)current_state.fan_speed);
-    nvs_set_u8(nvs_handle, "eco", current_state.eco_mode ? 1 : 0);
-    nvs_set_u8(nvs_handle, "night", current_state.night_mode ? 1 : 0);
-    nvs_set_u8(nvs_handle, "display", current_state.display_on ? 1 : 0);
-    nvs_set_u8(nvs_handle, "swing", current_state.swing_on ? 1 : 0);
-    nvs_set_u8(nvs_handle, "purifier", current_state.purifier_on ? 1 : 0);
-    nvs_set_u8(nvs_handle, "mute", current_state.mute_on ? 1 : 0);
+    // Save all settings (from a snapshot taken under the state mutex)
+    hvac_state_t s;
+    hvac_get_state(&s);
+    nvs_set_u8(nvs_handle, "mode", (uint8_t)s.mode);
+    nvs_set_u8(nvs_handle, "power", s.power_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "temp", s.target_temp_c);
+    nvs_set_u8(nvs_handle, "fan", (uint8_t)s.fan_speed);
+    nvs_set_u8(nvs_handle, "eco", s.eco_mode ? 1 : 0);
+    nvs_set_u8(nvs_handle, "night", s.night_mode ? 1 : 0);
+    nvs_set_u8(nvs_handle, "display", s.display_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "swing", s.swing_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "purifier", s.purifier_on ? 1 : 0);
+    nvs_set_u8(nvs_handle, "mute", s.mute_on ? 1 : 0);
     
     // Commit changes
     err = nvs_commit(nvs_handle);
@@ -827,7 +1017,7 @@ esp_err_t hvac_driver_init(void)
     
     // Create RX task
     ESP_LOGI(TAG, "[HVAC] Creating RX task");
-    BaseType_t task_ret = xTaskCreate(hvac_rx_task, "hvac_rx", 3072, NULL, 5, NULL);
+    BaseType_t task_ret = xTaskCreate(hvac_rx_task, "hvac_rx", 4096, NULL, 5, NULL);
     if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "[ERROR] Failed to create RX task");
         return ESP_FAIL;
@@ -849,9 +1039,13 @@ esp_err_t hvac_driver_init(void)
     hvac_send_keepalive();
     ESP_LOGI(TAG, "[OK] Initial keepalive sent");
     
-    // Apply loaded settings to HVAC
-    ESP_LOGI(TAG, "[HVAC] Applying loaded settings to HVAC");
-    hvac_build_and_send_command();
+    /* Do NOT push the NVS settings to the AC here. They only track changes made
+     * over Zigbee (saved with a 15-minute delay), so they can be stale: sending
+     * them would undo anything done with the IR remote, e.g. switch the AC back
+     * on after a module reboot. The AC is the source of truth - ask it for its
+     * state; the status frame overwrites the loaded values. */
+    ESP_LOGI(TAG, "[HVAC] Requesting current state from HVAC");
+    hvac_request_status();
     
     return ESP_OK;
 }
@@ -879,9 +1073,10 @@ esp_err_t hvac_set_power(bool power_on)
     ESP_LOGI(TAG, "Setting power: %s", power_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.power_on = power_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -895,9 +1090,10 @@ esp_err_t hvac_set_mode(hvac_mode_t mode)
     if (mode != HVAC_MODE_OFF) {
         current_state.power_on = true;
     }
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -913,9 +1109,10 @@ esp_err_t hvac_set_temperature(uint8_t temp_c)
     ESP_LOGI(TAG, "Setting temperature: %d°C", temp_c);
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.target_temp_c = temp_c;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -928,14 +1125,19 @@ esp_err_t hvac_set_eco_mode(bool eco_on)
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     // Eco mode only works in COOL mode
     if (eco_on && current_state.mode != HVAC_MODE_COOL) {
+        // The Zigbee attribute was already written to ON by the stack: fetch
+        // the AC state and push it back so the switch does not stay wrong.
+        status_pending = true;
+        force_notify = true;
         xSemaphoreGive(state_mutex);
         ESP_LOGW(TAG, "Eco mode only available in COOL mode");
         return ESP_ERR_INVALID_STATE;
     }
     current_state.eco_mode = eco_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -946,9 +1148,10 @@ esp_err_t hvac_set_display(bool display_on)
     ESP_LOGI(TAG, "Setting display: %s", display_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.display_on = display_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -959,9 +1162,18 @@ esp_err_t hvac_set_swing(bool swing_on)
     ESP_LOGI(TAG, "Setting swing: %s", swing_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.swing_on = swing_on;
+    // Vertical nibble: SWING (0x1) when on. When off, stop the swing but keep
+    // a fixed louvre position (0x2-0x6) set from the remote. The horizontal
+    // nibble is left as the AC reported it.
+    if (swing_on) {
+        swing_raw = (swing_raw & 0xF0) | HVAC_SWING_AUTO;
+    } else if ((swing_raw & 0x0F) == HVAC_SWING_AUTO) {
+        swing_raw = (swing_raw & 0xF0) | HVAC_SWING_STOP;
+    }
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -976,10 +1188,12 @@ esp_err_t hvac_set_fan_speed(hvac_fan_t fan)
     if (current_state.eco_mode) {
         ESP_LOGW(TAG, "Fan speed ignored in eco mode (forced to AUTO)");
         current_state.fan_speed = HVAC_FAN_AUTO;
+        force_notify = true;  // correct the Zigbee attribute the stack already wrote
     }
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -987,8 +1201,12 @@ esp_err_t hvac_set_fan_speed(hvac_fan_t fan)
  */
 esp_err_t hvac_request_status(void)
 {
-    ESP_LOGI(TAG, "Requesting HVAC status");
-    return hvac_send_frame(get_status_frame, sizeof(get_status_frame));
+    /* Queued: the HVAC task transmits it when the line is idle */
+    ESP_LOGD(TAG, "Requesting HVAC status");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    status_pending = true;
+    xSemaphoreGive(state_mutex);
+    return ESP_OK;
 }
 
 /**
@@ -996,8 +1214,12 @@ esp_err_t hvac_request_status(void)
  */
 esp_err_t hvac_send_keepalive(void)
 {
+    /* Queued: the HVAC task transmits it when the line is idle */
     ESP_LOGD(TAG, "Sending keepalive");
-    return hvac_send_frame(keepalive_frame, sizeof(keepalive_frame));
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    keepalive_pending = true;
+    xSemaphoreGive(state_mutex);
+    return ESP_OK;
 }
 
 /**
@@ -1008,9 +1230,10 @@ esp_err_t hvac_set_night_mode(bool night_on)
     ESP_LOGI(TAG, "Setting night mode: %s", night_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.night_mode = night_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -1021,9 +1244,10 @@ esp_err_t hvac_set_purifier(bool purifier_on)
     ESP_LOGI(TAG, "Setting purifier: %s", purifier_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.purifier_on = purifier_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**
@@ -1034,9 +1258,10 @@ esp_err_t hvac_set_mute(bool mute_on)
     ESP_LOGI(TAG, "Setting mute: %s", mute_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.mute_on = mute_on;
+    hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
-    return hvac_build_and_send_command();
+    return ESP_OK;
 }
 
 /**

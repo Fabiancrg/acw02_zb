@@ -124,8 +124,11 @@ static void button_task(void *arg)
                     if ((current_time - press_start_time) >= LONG_PRESS_DURATION && !long_press_triggered) {
                         long_press_triggered = true;
                         ESP_LOGW(TAG, "[BUTTON] Long press detected! Triggering factory reset...");
-                        // Schedule factory reset in Zigbee context
+                        // Schedule factory reset in Zigbee context. This is not the
+                        // Zigbee task, so the stack lock must be held.
+                        esp_zb_lock_acquire(portMAX_DELAY);
                         esp_zb_scheduler_alarm((esp_zb_callback_t)factory_reset_device, 0, 100);
+                        esp_zb_lock_release();
                     }
                     vTaskDelay(pdMS_TO_TICKS(100));
                     poll_count += pdMS_TO_TICKS(100);
@@ -206,8 +209,28 @@ static esp_err_t button_init(void)
 static void hvac_uart_state_changed_callback(void)
 {
     /* Schedule immediate Zigbee attribute update (runs in Zigbee task context)
-     * This ensures physical remote changes are reflected instantly */
+     * This ensures physical remote changes are reflected instantly.
+     * Runs on the UART RX task, not the Zigbee task: every esp_zb_* call must
+     * hold the stack lock. Cancel first so back-to-back frames yield one update. */
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_scheduler_alarm_cancel((esp_zb_callback_t)hvac_update_zigbee_attributes, 0);
     esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_update_zigbee_attributes, 0, 100);
+    esp_zb_lock_release();
+}
+
+/* Common to a fresh join and a rejoin after reboot (Zigbee task context). */
+static void on_network_joined(void)
+{
+    /* Mark Zigbee connection as successful for OTA validation */
+    ota_validation_zigbee_connected();
+
+    /* Request initial status to populate Zigbee attributes */
+    hvac_request_status();
+
+    /* Start keepalive task (sends keepalive every 30s to maintain UART
+     * connection); cancel first so a second join never leaves two chains. */
+    esp_zb_scheduler_alarm_cancel((esp_zb_callback_t)hvac_keepalive_task, 0);
+    esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_keepalive_task, 0, 5000);
 }
 
 static esp_err_t deferred_driver_init(void)
@@ -303,6 +326,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                 ESP_LOGI(TAG, "[JOIN] IEEE Address: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee_addr[7], ieee_addr[6], ieee_addr[5], ieee_addr[4],
                          ieee_addr[3], ieee_addr[2], ieee_addr[1], ieee_addr[0]);
+                /* No steering signal follows a rejoin, so do the post-join
+                 * work here: validate a pending OTA image, request the AC
+                 * state and start the keepalive. */
+                on_network_joined();
             }
         } else {
             ESP_LOGW(TAG, "[JOIN] Failed to initialize Zigbee stack (status: %s)", 
@@ -374,16 +401,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             
             ESP_LOGI(TAG, "[JOIN] Device is now online and ready");
             
-            /* Mark Zigbee connection as successful for OTA validation */
-            ota_validation_zigbee_connected();
-            
             ESP_LOGI(TAG, "[JOIN] Starting keepalive task and requesting initial state...");
-            
-            /* Request initial status to populate Zigbee attributes */
-            hvac_request_status();
-            
-            /* Start keepalive task (sends keepalive every 30s to maintain UART connection) */
-            esp_zb_scheduler_alarm((esp_zb_callback_t)hvac_keepalive_task, 0, 5000);
+            on_network_joined();
             ESP_LOGI(TAG, "[JOIN] Setup complete!");
         } else {
             ESP_LOGW(TAG, "[JOIN] Network steering failed (status: %s)", 
