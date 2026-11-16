@@ -39,13 +39,18 @@ Restart Home Assistant, then in the ZHA integration UI, select the ACW02-ZB devi
 |----------|-----------------------------|--------------------|------------------------------|
 | EP1      | Thermostat + Fan control    | Climate            | Main HVAC control            |
 | EP2      | Eco mode                    | Switch             |                              |
-| EP3      | Swing mode                  | Switch             |                              |
+| EP1      | Vertical louvre position    | — (attribute only) | Thermostat attr 0x0045, values 1–5 |
+| EP3      | Vertical swing              | Switch             |                              |
+| EP3      | Horizontal swing mode       | — (attribute only) | Multistate Value 0x0014, attr 0x0055, values 1–9 |
 | EP4      | Display on/off              | Switch             |                              |
 | EP5      | Night / sleep mode          | Switch             |                              |
 | EP6      | Air purifier / ionizer      | Switch             |                              |
 | EP7      | Filter clean status         | Switch (read-only) | Do not toggle — see note     |
 | EP8      | Mute beep sounds            | Switch             |                              |
 | EP9      | AC error status             | Switch (read-only) | Do not toggle — see note     |
+| EP10     | Self-clean cycle            | Switch             | Switches the AC off first    |
+
+Devices paired with firmware older than the EP10 release must be removed and re-paired after the update: the quirk signature now includes EP10 and the Multistate Value cluster on EP3. See the quirk's docstring for the louvre and horizontal swing values.
 
 ---
 
@@ -56,7 +61,8 @@ Restart Home Assistant, then in the ZHA integration UI, select the ACW02-ZB devi
 | Climate modes (off/cool/heat/dry/fan_only) | ✅         | ✅ Standard Zigbee SystemMode values match |
 | Temperature reading              | ✅                 | ✅                           |
 | Temperature setpoint             | ✅                 | ✅                           |
-| Eco / Swing / Display / Night / Purifier / Mute | ✅  | ✅ As switch entities        |
+| Eco / Swing / Display / Night / Purifier / Mute / Self-clean | ✅  | ✅ As switch entities        |
+| Vertical louvre position / horizontal swing | ✅ Select entities | ⚠️ No entity — use `zha.set_attribute_value` |
 | Fan speed labels in climate entity | ✅ custom converter | ⚠️ Labels incorrect — see note |
 | EP7 clean status as binary sensor | ✅                | ⚠️ Appears as switch — disable in HA |
 | EP9 error status as binary sensor | ✅                | ⚠️ Appears as switch — disable in HA |

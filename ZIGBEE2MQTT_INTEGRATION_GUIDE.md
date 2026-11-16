@@ -394,10 +394,20 @@ external_converters:
 ```
 3. Restart Zigbee2MQTT
 
+## Louvres and Self-Clean (external converter)
+
+`acw02-zb.js` also exposes, with firmware that has endpoint 10:
+
+- `louvre_position`: `position_1` (top) … `position_5` (bottom). Selecting one stops vertical swing.
+- `swing_horizontal`: `stop`, `swing`, `position_1` … `position_5`, `range_1_5`, `swing_mid_out`.
+- `state_self_clean` (endpoint 10): starts or stops a self-clean cycle. Turning it on switches the AC off (and to cool mode if needed) first.
+
+After updating the firmware, re-run *Reconfigure* on the device in Zigbee2MQTT (or re-pair it) so the new endpoint and attributes are interviewed. The upstream definition in `custom_devices_diy.ts` / `acw02-zb.ts` exposes the same controls; until it is merged into zigbee-herdsman-converters, the built-in ACW02-ZB definition in Zigbee2MQTT does not have them, so use the external converter.
+
 ## Notes
 
 - **Manufacturer Name:** Device reports "Custom devices (DiY)" matching the Zigbee2MQTT vendor category
-- **Multi-endpoint:** Uses 9 endpoints for complete AC control
+- **Multi-endpoint:** Uses 10 endpoints for complete AC control
 - **Reporting Optimization:** Most attributes use ESP_ZB_ZCL_ATTR_ACCESS_REPORTING flag for automatic updates
 - **Polling:** Only 3 attributes need polling (runningMode, fanMode, error_text) due to ESP-Zigbee stack limitations
 

@@ -26,6 +26,7 @@
 #define HA_ESP_CLEAN_ENDPOINT           7                                    /* Clean status binary sensor endpoint */
 #define HA_ESP_MUTE_ENDPOINT            8                                    /* Mute switch endpoint */
 #define HA_ESP_ERROR_ENDPOINT           9                                    /* Error/diagnostics binary sensor endpoint */
+#define HA_ESP_SELF_CLEAN_ENDPOINT      10                                   /* Self-clean switch endpoint (10 endpoints is the stack's limit) */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
 /* Button configuration */

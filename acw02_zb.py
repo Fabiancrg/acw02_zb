@@ -13,13 +13,30 @@ Installation:
 Device endpoints:
     EP1: Main thermostat (Thermostat + FanControl + Basic + Identify + OTA client)
     EP2: Eco mode switch (OnOff)
-    EP3: Swing mode switch (OnOff)
+    EP3: Vertical swing switch (OnOff) + horizontal swing mode (MultistateValue)
     EP4: Display switch (OnOff)
     EP5: Night mode switch (OnOff)
     EP6: Purifier/ionizer switch (OnOff)
     EP7: Filter clean status - read-only (OnOff, appears as a switch - do not toggle)
     EP8: Mute switch (OnOff)
     EP9: AC error status - read-only (OnOff, appears as a switch - do not toggle)
+    EP10: Self-clean switch (OnOff)
+
+Vertical louvre position (EP1 Thermostat, attribute 0x0045 ac_louver_position):
+    Carries the raw ACW02 position, 1 (top) to 5 (bottom). Writing it moves the
+    louvre to that position and stops vertical swing. ZHA does not create an
+    entity for it; write it with zha.set_attribute_value (cluster 0x0201,
+    attribute 0x0045).
+
+Horizontal swing (EP3 MultistateValue, attribute 0x0055 present_value):
+    1 = stop, 2 = full swing, 3-7 = fixed positions 1-5, 8 = range 1-5,
+    9 = swing from the middle outwards. ZHA does not create an entity for it;
+    write it with zha.set_attribute_value (cluster 0x0014, attribute 0x0055).
+
+Self-clean (EP10):
+    Turning it on switches the AC off (and to cool mode if needed) and then
+    starts the cycle; any other command cancels it. It turns off by itself
+    when the AC finishes.
 
 Fan modes:
     The ACW02 firmware uses non-standard fan mode values that differ from the
@@ -64,7 +81,7 @@ Polling (runningMode, fanMode, locationDesc):
 import zigpy.types as t
 from zigpy.profiles import zha
 from zigpy.quirks import CustomCluster, CustomDevice
-from zigpy.zcl.clusters.general import Basic, Identify, OnOff, Ota
+from zigpy.zcl.clusters.general import Basic, Identify, MultistateValue, OnOff, Ota
 from zigpy.zcl.clusters.hvac import Fan, Thermostat
 
 from zhaquirks.const import (
@@ -147,13 +164,14 @@ class ACW02ZB(CustomDevice):
                 ],
                 OUTPUT_CLUSTERS: [],
             },
-            # EP3 - Swing mode
+            # EP3 - Vertical swing + horizontal swing mode
             3: {
                 PROFILE_ID: zha.PROFILE_ID,
                 DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
                 INPUT_CLUSTERS: [
                     Basic.cluster_id,
                     OnOff.cluster_id,
+                    MultistateValue.cluster_id,  # 0x0014
                 ],
                 OUTPUT_CLUSTERS: [],
             },
@@ -217,6 +235,16 @@ class ACW02ZB(CustomDevice):
                 ],
                 OUTPUT_CLUSTERS: [],
             },
+            # EP10 - Self-clean
+            10: {
+                PROFILE_ID: zha.PROFILE_ID,
+                DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
+                INPUT_CLUSTERS: [
+                    Basic.cluster_id,
+                    OnOff.cluster_id,
+                ],
+                OUTPUT_CLUSTERS: [],
+            },
         },
     }
 
@@ -236,7 +264,7 @@ class ACW02ZB(CustomDevice):
                     Ota.cluster_id,         # 0x0019
                 ],
             },
-            # EP2-9 are unchanged - pass-through to standard clusters
+            # EP2-10 are unchanged - pass-through to standard clusters
             2: {
                 PROFILE_ID: zha.PROFILE_ID,
                 DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
@@ -246,7 +274,7 @@ class ACW02ZB(CustomDevice):
             3: {
                 PROFILE_ID: zha.PROFILE_ID,
                 DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
-                INPUT_CLUSTERS: [Basic.cluster_id, OnOff.cluster_id],
+                INPUT_CLUSTERS: [Basic.cluster_id, OnOff.cluster_id, MultistateValue.cluster_id],
                 OUTPUT_CLUSTERS: [],
             },
             4: {
@@ -280,6 +308,12 @@ class ACW02ZB(CustomDevice):
                 OUTPUT_CLUSTERS: [],
             },
             9: {
+                PROFILE_ID: zha.PROFILE_ID,
+                DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
+                INPUT_CLUSTERS: [Basic.cluster_id, OnOff.cluster_id],
+                OUTPUT_CLUSTERS: [],
+            },
+            10: {
                 PROFILE_ID: zha.PROFILE_ID,
                 DEVICE_TYPE: ON_OFF_OUTPUT_DEVICE_TYPE,
                 INPUT_CLUSTERS: [Basic.cluster_id, OnOff.cluster_id],

@@ -21,8 +21,50 @@ const m = require('zigbee-herdsman-converters/lib/modernExtend');
 const e = exposes.presets;
 const ea = exposes.access;
 
+// Vertical louvre: hvacThermostat acLouverPosition carries the raw ACW02
+// position number (1 = top ... 5 = bottom).
+const louvrePositions = ['position_1', 'position_2', 'position_3', 'position_4', 'position_5'];
+
+// Horizontal swing: genMultistateValue presentValue on endpoint 3 is a 1-based
+// index into this list (same order as swing_h_modes[] in esp_zb_hvac.c).
+const swingHorizontalModes = [
+    'stop',          // 1
+    'swing',         // 2  full left-right swing
+    'position_1',    // 3
+    'position_2',    // 4
+    'position_3',    // 5
+    'position_4',    // 6
+    'position_5',    // 7
+    'range_1_5',     // 8
+    'swing_mid_out', // 9
+];
+
 // Custom converters for named switches and custom fan modes
 const tzLocal = {
+    louvre_position: {
+        key: ['louvre_position'],
+        convertSet: async (entity, key, value, meta) => {
+            const index = louvrePositions.indexOf(value);
+            if (index < 0) throw new Error(`Invalid louvre position: ${value}`);
+            await entity.write('hvacThermostat', {'acLouverPosition': index + 1});
+            return {state: {louvre_position: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await entity.read('hvacThermostat', ['acLouverPosition']);
+        },
+    },
+    swing_horizontal: {
+        key: ['swing_horizontal'],
+        convertSet: async (entity, key, value, meta) => {
+            const index = swingHorizontalModes.indexOf(value);
+            if (index < 0) throw new Error(`Invalid horizontal swing mode: ${value}`);
+            await meta.device.getEndpoint(3).write('genMultistateValue', {'presentValue': index + 1});
+            return {state: {swing_horizontal: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await meta.device.getEndpoint(3).read('genMultistateValue', ['presentValue']);
+        },
+    },
     fan_mode: {
         key: ['fan_mode'],
         convertSet: async (entity, key, value, meta) => {
@@ -66,6 +108,18 @@ const fzLocal = {
                     0x0D: 'quiet',    // TURBO (map to quiet for now)
                 };
                 return {fan_mode: fanModeMap[msg.data.fanMode]};
+            }
+        },
+    },
+
+    // Horizontal swing mode (endpoint 3, multistate value)
+    swing_horizontal: {
+        cluster: 'genMultistateValue',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 3 && msg.data.hasOwnProperty('presentValue')) {
+                const mode = swingHorizontalModes[msg.data.presentValue - 1];
+                if (mode !== undefined) return {swing_horizontal: mode};
             }
         },
     },
@@ -121,6 +175,10 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const result = {};
+            if (msg.data.hasOwnProperty('acLouverPosition')) {
+                const position = louvrePositions[msg.data.acLouverPosition - 1];
+                if (position !== undefined) result.louvre_position = position;
+            }
             if (msg.data.hasOwnProperty('localTemp')) {
                 result.local_temperature = msg.data.localTemp / 100;
             }
@@ -171,16 +229,19 @@ const definition = {
     fromZigbee: [
         fzLocal.thermostat,   // Custom thermostat converter
         fzLocal.fan_mode,
+        fzLocal.swing_horizontal, // Horizontal swing mode (endpoint 3)
         fzLocal.clean_status, // Read-only binary sensor for endpoint 7
         fzLocal.error_status, // Read-only binary sensor for endpoint 9
-        fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8)
+        fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8,10)
         fzLocal.error_text,
     ],
     toZigbee: [
         tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
         tzLocal.fan_mode,
-        tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7
+        tzLocal.louvre_position,
+        tzLocal.swing_horizontal,
+        tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8,10) - NOT endpoint 7
         // Note: clean_status (endpoint 7) is read-only, no toZigbee converter
     ],
     
@@ -197,7 +258,14 @@ const definition = {
             .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
         exposes.binary('ac_error_status', exposes.access.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
         e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
-        e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
+        e.switch().withEndpoint('swing_mode').withDescription('Vertical swing'),
+        exposes.enum('louvre_position', exposes.access.ALL, louvrePositions)
+            .withDescription('Fixed vertical louvre position (1 = top, 5 = bottom). Selecting one stops vertical swing.'),
+        exposes.enum('swing_horizontal', exposes.access.ALL, swingHorizontalModes)
+            .withDescription('Horizontal swing: stop, full swing, a fixed position, the 1-5 range, or swing from the middle outwards'),
+        e.switch().withEndpoint('self_clean')
+            .withDescription('Self-clean cycle. Turning it on switches the AC off (and to cool mode if needed) first; ' +
+                             'any other command cancels the cycle.'),
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
@@ -217,6 +285,7 @@ const definition = {
             'clean_sensor': 7,     // Clean status binary sensor (read-only)
             'mute': 8,             // Mute switch
             'error_sensor': 9,     // Error status binary sensor (read-only)
+            'self_clean': 10,      // Self-clean switch
         };
     },
     
@@ -231,7 +300,8 @@ const definition = {
         const endpoint7 = device.getEndpoint(7);
         const endpoint8 = device.getEndpoint(8);
         const endpoint9 = device.getEndpoint(9);
-        
+        const endpoint10 = device.getEndpoint(10);
+
         // Bind clusters for main thermostat (endpoint 1)
         await reporting.bind(endpoint1, coordinatorEndpoint, [
             'genBasic',
@@ -277,12 +347,31 @@ const definition = {
         
         await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint9);  // Error status (read-only)
-        
+
+        await reporting.bind(endpoint10, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint10);  // Self-clean
+
+        // Louvre position and horizontal swing. Not fatal: if reporting is
+        // refused on these attributes, they are polled below.
+        try {
+            await reporting.bind(endpoint3, coordinatorEndpoint, ['genMultistateValue']);
+            await endpoint3.configureReporting('genMultistateValue', [{
+                attribute: 'presentValue', minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1,
+            }]);
+            await endpoint1.configureReporting('hvacThermostat', [{
+                attribute: 'acLouverPosition', minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1,
+            }]);
+        } catch (error) {
+            logger.warn(`ACW02 configure: louvre/horizontal swing reporting not configured: ${error.message}`);
+        }
+
         // Initial read of unreportable attributes (only the ones we need to poll)
         try {
             await endpoint1.read('hvacThermostat', ['runningMode']);  // Not auto-reportable
             await endpoint1.read('genBasic', ['locationDesc']);  // Error text
             await endpoint1.read('hvacFanCtrl', ['fanMode']);  // Not auto-reportable
+            await endpoint1.read('hvacThermostat', ['acLouverPosition']);
+            await endpoint3.read('genMultistateValue', ['presentValue']);
         } catch (error) {
             logger.warn(`ACW02 configure: Initial read failed: ${error.message}`);
         }
@@ -326,6 +415,15 @@ const definition = {
                     await endpoint1.read('genBasic', ['locationDesc']);
                 } catch (error) {
                     console.error(`ACW02 polling: error_text read failed: ${error.message}`);
+                }
+
+                try {
+                    // Louvre position and horizontal swing, in case reporting was refused
+                    await endpoint1.read('hvacThermostat', ['acLouverPosition']);
+                    const endpoint3 = device.getEndpoint(3);
+                    if (endpoint3) await endpoint3.read('genMultistateValue', ['presentValue']);
+                } catch (error) {
+                    console.error(`ACW02 polling: louvre/horizontal swing read failed: ${error.message}`);
                 }
             },
         }),

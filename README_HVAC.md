@@ -171,6 +171,20 @@ The AC is the source of truth:
 - **At boot** the driver does not send any command. It requests the AC's status and adopts it, so a module reboot (power glitch, OTA) never changes what the AC is doing. Settings are still saved to NVS (at most once every 15 minutes) but are only used until the first status frame arrives; the mute setting, which the AC does not report, is the one that effectively persists.
 - **Swing**: the switch maps to vertical swing (`0x1`). The horizontal swing and any fixed louvre position set from the IR remote are preserved when other settings are changed.
 - **Clean status** (endpoint 7) is ON when the AC reports the filter-cleaning warning, or while a self-clean cycle is running (only reported in cool or dry mode).
+- **Power off** clears eco, night and purifier, because the AC drops them when it switches off. Turning any of them on while the AC is off is refused and the switch returns to OFF.
+
+### Louvres and Self-Clean
+
+| Control | Zigbee | Values |
+|---|---|---|
+| Vertical swing | EP3 On/Off | on = swing (`0x1`), off = stop |
+| Vertical louvre position | EP1 Thermostat, `acLouverPosition` (0x0045) | 1 (top) – 5 (bottom); selecting one stops vertical swing |
+| Horizontal swing | EP3 Multistate Value, `presentValue` | 1 stop, 2 full swing, 3–7 positions 1–5, 8 range 1–5, 9 swing from the middle outwards |
+| Self-clean | EP10 On/Off | on = start a cycle, off = stop it |
+
+`acLouverPosition` carries the raw ACW02 position number, not the ZCL "fully closed / quarter open" meaning; the Zigbee2MQTT converter exposes it as `position_1` … `position_5`.
+
+Self-clean only runs while the AC is off in cool or dry mode. Turning it on while the AC is running switches the AC off (and to cool mode if needed), then sends the clean command 3 seconds later. Any other command cancels the cycle, and the switch turns off by itself when the AC reports the cycle finished.
 
 ### Command Confirmation and Retry
 
@@ -233,6 +247,6 @@ This code is based on Espressif's Zigbee examples and inherits their licensing.
 - [x] Add night mode support
 - [x] Implement filter status monitoring
 - [x] Detect Fahrenheit setpoints
-- [ ] Support horizontal swing control
-- [ ] Support fixed vertical louvre positions
-- [ ] Add clean mode support (start a self-clean cycle)
+- [x] Support horizontal swing control
+- [x] Support fixed vertical louvre positions
+- [x] Add clean mode support (start a self-clean cycle)

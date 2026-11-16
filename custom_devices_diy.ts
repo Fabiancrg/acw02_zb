@@ -18,7 +18,35 @@ const switchTypesList = {
     "multi-click": 0x02,
 };
 
+// ACW02-ZB horizontal swing: genMultistateValue presentValue on endpoint 3 is a
+// 1-based index into this list (same order as swing_h_modes[] in the firmware).
+const acw02SwingHorizontalModes = [
+    "stop",
+    "swing",
+    "position_1",
+    "position_2",
+    "position_3",
+    "position_4",
+    "position_5",
+    "range_1_5",
+    "swing_mid_out",
+];
+
 const tzLocal = {
+    acw02_swing_horizontal: {
+        key: ["swing_horizontal"],
+        convertSet: async (entity, key, value, meta) => {
+            const index = acw02SwingHorizontalModes.indexOf(value as string);
+            if (index < 0) throw new Error(`Invalid horizontal swing mode: ${value}`);
+            const endpoint = meta.device.getEndpoint(3);
+            if (!endpoint) throw new Error("ACW02-ZB: endpoint 3 not found");
+            await endpoint.write("genMultistateValue", {presentValue: index + 1});
+            return {state: {swing_horizontal: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await meta.device.getEndpoint(3)?.read("genMultistateValue", ["presentValue"]);
+        },
+    } satisfies Tz.Converter,
     tirouter: {
         key: ["transmit_power"],
         convertSet: async (entity, key, value, meta) => {
@@ -144,6 +172,17 @@ const fzLocal = {
             return {[`switch_type_${channel}`]: getKey(switchTypesList, switchType)};
         },
     } satisfies Fz.Converter<"genOnOffSwitchCfg", undefined, ["readResponse", "attributeReport"]>,
+
+    acw02_swing_horizontal: {
+        cluster: "genMultistateValue",
+        type: ["attributeReport", "readResponse"],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.endpoint.ID === 3 && Object.hasOwn(msg.data, "presentValue")) {
+                const mode = acw02SwingHorizontalModes[(msg.data.presentValue as number) - 1];
+                if (mode !== undefined) return {swing_horizontal: mode};
+            }
+        },
+    } satisfies Fz.Converter<"genMultistateValue", undefined, ["attributeReport", "readResponse"]>,
 
     acw02_clean_status: {
         cluster: "genOnOff",
@@ -1170,6 +1209,7 @@ export const definitions: DefinitionWithExtend[] = [
             fzLocal.acw02_thermostat,
             fzLocal.acw02_clean_status,
             fzLocal.acw02_error_status,
+            fzLocal.acw02_swing_horizontal,
             fz.on_off,
             fzLocal.acw02_error_text,
         ],
@@ -1177,6 +1217,7 @@ export const definitions: DefinitionWithExtend[] = [
             tz.thermostat_local_temperature,
             tz.thermostat_occupied_heating_setpoint,
             tz.thermostat_system_mode,
+            tzLocal.acw02_swing_horizontal,
             tz.on_off,
         ],
 
@@ -1190,12 +1231,19 @@ export const definitions: DefinitionWithExtend[] = [
             exposes.text("error_text", ea.STATE_GET).withDescription("Error message from AC unit (read-only)"),
             exposes.binary("ac_error_status", ea.STATE_GET, "ON", "OFF").withDescription("Error status indicator (read-only)"),
             e.switch().withEndpoint("eco_mode").withDescription("Eco mode"),
-            e.switch().withEndpoint("swing_mode").withDescription("Swing mode"),
+            e.switch().withEndpoint("swing_mode").withDescription("Vertical swing"),
+            exposes
+                .enum("swing_horizontal", ea.ALL, acw02SwingHorizontalModes)
+                .withDescription("Horizontal swing: stop, full swing, a fixed position, the 1-5 range, or swing from the middle outwards"),
             e.switch().withEndpoint("display").withDescription("Display control"),
             e.switch().withEndpoint("night_mode").withDescription("Night/sleep mode"),
             e.switch().withEndpoint("purifier").withDescription("Air purifier/ionizer"),
             exposes.binary("filter_clean_status", ea.STATE_GET, "ON", "OFF").withDescription("Filter cleaning reminder (read-only)"),
             e.switch().withEndpoint("mute").withDescription("Mute beep sounds"),
+            e
+                .switch()
+                .withEndpoint("self_clean")
+                .withDescription("Self-clean cycle. Turning it on switches the AC off (and to cool mode if needed) first; any other command cancels it."),
         ],
 
         endpoint: (device) => {
@@ -1209,6 +1257,7 @@ export const definitions: DefinitionWithExtend[] = [
                 clean_sensor: 7,
                 mute: 8,
                 error_sensor: 9,
+                self_clean: 10,
             };
         },
 
@@ -1222,6 +1271,7 @@ export const definitions: DefinitionWithExtend[] = [
             const endpoint7 = device.getEndpoint(7);
             const endpoint8 = device.getEndpoint(8);
             const endpoint9 = device.getEndpoint(9);
+            const endpoint10 = device.getEndpoint(10);
 
             await reporting.bind(endpoint1, coordinatorEndpoint, ["genBasic", "hvacThermostat", "hvacFanCtrl"]);
             await reporting.thermostatTemperature(endpoint1);
@@ -1236,15 +1286,31 @@ export const definitions: DefinitionWithExtend[] = [
             ]);
 
             // Configure all switch endpoints
-            for (const ep of [endpoint2, endpoint3, endpoint4, endpoint5, endpoint6, endpoint7, endpoint8, endpoint9]) {
+            for (const ep of [endpoint2, endpoint3, endpoint4, endpoint5, endpoint6, endpoint7, endpoint8, endpoint9, endpoint10]) {
                 await reporting.bind(ep, coordinatorEndpoint, ["genOnOff"]);
                 await reporting.onOff(ep);
+            }
+
+            // Louvre position and horizontal swing: not fatal if reporting is
+            // refused, both are also polled.
+            try {
+                await reporting.bind(endpoint3, coordinatorEndpoint, ["genMultistateValue"]);
+                await endpoint3.configureReporting("genMultistateValue", [
+                    {attribute: "presentValue", minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1},
+                ]);
+                await endpoint1.configureReporting("hvacThermostat", [
+                    {attribute: "acLouverPosition", minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1},
+                ]);
+            } catch (error) {
+                console.warn(`ACW02-ZB: louvre/horizontal swing reporting not configured: ${(error as Error).message}`);
             }
 
             // Initial read of unreportable attributes
             await endpoint1.read("hvacThermostat", ["runningMode"]);
             await endpoint1.read("genBasic", ["locationDesc"]);
             await endpoint1.read("hvacFanCtrl", ["fanMode"]);
+            await endpoint1.read("hvacThermostat", ["acLouverPosition"]);
+            await endpoint3.read("genMultistateValue", ["presentValue"]);
         },
 
         extend: [
@@ -1263,6 +1329,19 @@ export const definitions: DefinitionWithExtend[] = [
                 },
                 description: "Fan speed: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO",
             }),
+            m.enumLookup({
+                name: "louvre_position",
+                cluster: "hvacThermostat",
+                attribute: "acLouverPosition",
+                lookup: {
+                    position_1: 1,
+                    position_2: 2,
+                    position_3: 3,
+                    position_4: 4,
+                    position_5: 5,
+                },
+                description: "Fixed vertical louvre position (1 = top, 5 = bottom). Selecting one stops vertical swing.",
+            }),
             m.poll({
                 key: "acw02_state",
                 option: e
@@ -1278,6 +1357,8 @@ export const definitions: DefinitionWithExtend[] = [
                         await endpoint1.read("hvacThermostat", ["runningMode"]);
                         await endpoint1.read("hvacFanCtrl", ["fanMode"]);
                         await endpoint1.read("genBasic", ["locationDesc"]);
+                        await endpoint1.read("hvacThermostat", ["acLouverPosition"]);
+                        await device.getEndpoint(3)?.read("genMultistateValue", ["presentValue"]);
                     } catch (error) {
                         console.error(`ACW02 polling failed: ${(error as Error).message}`);
                     }

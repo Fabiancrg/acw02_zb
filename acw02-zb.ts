@@ -22,8 +22,51 @@ import type {DefinitionWithExtend, Fz, Tz, KeyValue} from '../lib/types';
 const e = exposes.presets;
 const ea = exposes.access;
 
+// Horizontal swing: genMultistateValue presentValue on endpoint 3 is a 1-based
+// index into this list (same order as swing_h_modes[] in the firmware).
+const swingHorizontalModes = [
+    'stop',
+    'swing',
+    'position_1',
+    'position_2',
+    'position_3',
+    'position_4',
+    'position_5',
+    'range_1_5',
+    'swing_mid_out',
+];
+
+const tzLocal = {
+    swing_horizontal: {
+        key: ['swing_horizontal'],
+        convertSet: async (entity, key, value, meta) => {
+            const index = swingHorizontalModes.indexOf(value as string);
+            if (index < 0) throw new Error(`Invalid horizontal swing mode: ${value}`);
+            const endpoint = meta.device.getEndpoint(3);
+            if (!endpoint) throw new Error('ACW02-ZB: endpoint 3 not found');
+            await endpoint.write('genMultistateValue', {presentValue: index + 1});
+            return {state: {swing_horizontal: value}};
+        },
+        convertGet: async (entity, key, meta) => {
+            await meta.device.getEndpoint(3)?.read('genMultistateValue', ['presentValue']);
+        },
+    } satisfies Tz.Converter,
+};
+
 // Custom converters for specialized functionality
 const fzLocal = {
+    // Horizontal swing mode (endpoint 3, multistate value)
+    swing_horizontal: {
+        cluster: 'genMultistateValue',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model: any, msg: any, publish: any, options: any, meta: any) => {
+            if (msg.endpoint.ID === 3 && msg.data.hasOwnProperty('presentValue')) {
+                const mode = swingHorizontalModes[(msg.data.presentValue as number) - 1];
+                if (mode !== undefined) return {swing_horizontal: mode};
+            }
+        },
+    } satisfies Fz.Converter<'genMultistateValue', undefined, ['attributeReport', 'readResponse']>,
+
     // Read-only binary sensor for clean status (endpoint 7)
     clean_status: {
         cluster: 'genOnOff',
@@ -123,13 +166,15 @@ const definition: DefinitionWithExtend = {
         fzLocal.thermostat,   // Custom thermostat converter
         fzLocal.clean_status, // Read-only binary sensor for endpoint 7
         fzLocal.error_status, // Read-only binary sensor for endpoint 9
-        fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8)
+        fzLocal.swing_horizontal, // Horizontal swing mode (endpoint 3)
+        fz.on_off,            // Standard on/off for switch endpoints (2,3,4,5,6,8,10)
         fzLocal.error_text,
     ],
     toZigbee: [
         tz.thermostat_occupied_heating_setpoint, // Single setpoint used for both heating and cooling
         tz.thermostat_system_mode,
-        tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8) - NOT endpoint 7
+        tzLocal.swing_horizontal,
+        tz.on_off,              // Standard on/off for switch endpoints (2,3,4,5,6,8,10) - NOT endpoint 7
         // Note: clean_status (endpoint 7) is read-only, no toZigbee converter
     ],
     
@@ -144,7 +189,11 @@ const definition: DefinitionWithExtend = {
             .withDescription('Error message text from AC (shows specific message for known errors, generic message for unknown errors, empty when no error, read-only)'),
         exposes.binary('ac_error_status', ea.STATE_GET, 'ON', 'OFF').withDescription('Error status indicator (read-only, ON when AC has an error)'),
         e.switch().withEndpoint('eco_mode').withDescription('Eco mode'),
-        e.switch().withEndpoint('swing_mode').withDescription('Swing mode'),
+        e.switch().withEndpoint('swing_mode').withDescription('Vertical swing'),
+        exposes.enum('swing_horizontal', ea.ALL, swingHorizontalModes)
+            .withDescription('Horizontal swing: stop, full swing, a fixed position, the 1-5 range, or swing from the middle outwards'),
+        e.switch().withEndpoint('self_clean')
+            .withDescription('Self-clean cycle. Turning it on switches the AC off (and to cool mode if needed) first; any other command cancels it.'),
         e.switch().withEndpoint('display').withDescription('Display on/off'),
         e.switch().withEndpoint('night_mode').withDescription('Night mode (sleep mode with adjusted settings)'),
         e.switch().withEndpoint('purifier').withDescription('Air purifier/ionizer'),
@@ -164,6 +213,7 @@ const definition: DefinitionWithExtend = {
             'clean_sensor': 7,
             'mute': 8,
             'error_sensor': 9,
+            'self_clean': 10,
         };
     },
     
@@ -182,7 +232,8 @@ const definition: DefinitionWithExtend = {
         const endpoint7 = device.getEndpoint(7);
         const endpoint8 = device.getEndpoint(8);
         const endpoint9 = device.getEndpoint(9);
-        
+        const endpoint10 = device.getEndpoint(10);
+
         // Bind clusters for main thermostat (endpoint 1)
         await reporting.bind(endpoint1, coordinatorEndpoint, [
             'genBasic',
@@ -228,14 +279,33 @@ const definition: DefinitionWithExtend = {
         
         await reporting.bind(endpoint9, coordinatorEndpoint, ['genOnOff']);
         await reporting.onOff(endpoint9);  // Error status (read-only)
-        
+
+        await reporting.bind(endpoint10, coordinatorEndpoint, ['genOnOff']);
+        await reporting.onOff(endpoint10);  // Self-clean
+
+        // Louvre position and horizontal swing: not fatal if reporting is
+        // refused, both are also polled.
+        try {
+            await reporting.bind(endpoint3, coordinatorEndpoint, ['genMultistateValue']);
+            await endpoint3.configureReporting('genMultistateValue', [{
+                attribute: 'presentValue', minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1,
+            }]);
+            await endpoint1.configureReporting('hvacThermostat', [{
+                attribute: 'acLouverPosition', minimumReportInterval: 1, maximumReportInterval: 3600, reportableChange: 1,
+            }]);
+        } catch (error) {
+            console.warn(`ACW02 configure: louvre/horizontal swing reporting not configured: ${(error as Error).message}`);
+        }
+
         // Initial read of unreportable attributes (only the ones we need to poll)
         try {
             await endpoint1.read('hvacThermostat', ['runningMode']);  // Not auto-reportable
             await endpoint1.read('genBasic', ['locationDesc']);  // Error text
             await endpoint1.read('hvacFanCtrl', ['fanMode']);  // Not auto-reportable
+            await endpoint1.read('hvacThermostat', ['acLouverPosition']);
+            await endpoint3.read('genMultistateValue', ['presentValue']);
         } catch (error) {
-            logger?.warn(`ACW02 configure: Initial read failed: ${(error as Error).message}`);
+            console.warn(`ACW02 configure: Initial read failed: ${(error as Error).message}`);
         }
     },
     
@@ -255,6 +325,19 @@ const definition: DefinitionWithExtend = {
                 'quiet': 0x06,
             },
             description: 'Fan speed: Quiet=SILENT, Low=P20, Low-Med=P40, Medium=P60, Med-High=P80, High=P100, Auto=AUTO',
+        }),
+        m.enumLookup({
+            name: 'louvre_position',
+            cluster: 'hvacThermostat',
+            attribute: 'acLouverPosition',
+            lookup: {
+                'position_1': 1,
+                'position_2': 2,
+                'position_3': 3,
+                'position_4': 4,
+                'position_5': 5,
+            },
+            description: 'Fixed vertical louvre position (1 = top, 5 = bottom). Selecting one stops vertical swing.',
         }),
         m.poll({
             key: "acw02_state",
@@ -292,6 +375,14 @@ const definition: DefinitionWithExtend = {
                     await endpoint1.read('genBasic', ['locationDesc']);
                 } catch (error) {
                     console.error(`ACW02 polling: error_text read failed: ${(error as Error).message}`);
+                }
+
+                try {
+                    // Louvre position and horizontal swing, in case reporting was refused
+                    await endpoint1.read('hvacThermostat', ['acLouverPosition']);
+                    await device.getEndpoint(3)?.read('genMultistateValue', ['presentValue']);
+                } catch (error) {
+                    console.error(`ACW02 polling: louvre/horizontal swing read failed: ${(error as Error).message}`);
                 }
             },
         }),

@@ -49,6 +49,19 @@ typedef enum {
     HVAC_SWING_P5 = 0x06
 } hvac_swing_t;
 
+/* HVAC Horizontal swing enumeration (upper nibble of the swing byte) */
+typedef enum {
+    HVAC_SWING_H_STOP = 0x00,
+    HVAC_SWING_H_AUTO_LEFT = 0x01,      // full left-right swing
+    HVAC_SWING_H_P1 = 0x02,
+    HVAC_SWING_H_P2 = 0x03,
+    HVAC_SWING_H_P3 = 0x04,
+    HVAC_SWING_H_P4 = 0x05,
+    HVAC_SWING_H_P5 = 0x06,
+    HVAC_SWING_H_RANGE_P1_P5 = 0x0C,
+    HVAC_SWING_H_AUTO_MID_OUT = 0x0D
+} hvac_swing_h_t;
+
 /* HVAC State structure */
 typedef struct {
     hvac_mode_t mode;
@@ -65,6 +78,9 @@ typedef struct {
     hvac_fan_t fan_speed;
     bool error;
     char error_text[64];
+    bool self_clean;        // Self-clean cycle requested or running
+    uint8_t swing_v_pos;    // Last fixed vertical louvre position (1-5)
+    hvac_swing_h_t swing_h; // Horizontal swing mode
 } hvac_state_t;
 
 /* UART Configuration */
@@ -140,6 +156,34 @@ esp_err_t hvac_set_display(bool display_on);
  * @return ESP_OK on success
  */
 esp_err_t hvac_set_swing(bool swing_on);
+
+/**
+ * @brief Move the vertical louvre to a fixed position (stops vertical swing)
+ *
+ * @param position 1-5
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_swing_position(uint8_t position);
+
+/**
+ * @brief Set horizontal swing mode
+ *
+ * @param mode Horizontal swing mode
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_swing_horizontal(hvac_swing_h_t mode);
+
+/**
+ * @brief Start or stop a self-clean cycle
+ *
+ * The AC only self-cleans while switched off in COOL or DRY mode, so starting
+ * a cycle switches the AC off (and to COOL if needed) first. Any other command
+ * cancels the cycle.
+ *
+ * @param on true to start, false to stop
+ * @return ESP_OK on success
+ */
+esp_err_t hvac_set_self_clean(bool on);
 
 /**
  * @brief Set night mode (sleep mode)

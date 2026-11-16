@@ -149,6 +149,9 @@ static hvac_state_t current_state = {
     .night_mode = false,
     .display_on = true,
     .swing_on = false,
+    .self_clean = false,
+    .swing_v_pos = 3,
+    .swing_h = HVAC_SWING_H_STOP,
     .purifier_on = false,
     .clean_status = false,
     .mute_on = false,
@@ -194,6 +197,14 @@ static uint8_t swing_raw = 0x00;         // swing byte as last reported: (horizo
 static bool use_fahrenheit = false;      // AC encodes its setpoint in Fahrenheit
 static bool filter_dirty = false;        // "CL" warning from a 28-byte frame
 static bool self_clean_active = false;   // self-clean bit from a status frame
+
+/* Self-clean command. The AC only accepts it while off in COOL or DRY mode, so
+ * when it is not, step 1 switches it off (and to COOL), and step 2 sends the
+ * clean bit HVAC_CLEAN_STEP_DELAY_MS later (see hvac_set_self_clean). */
+#define HVAC_CLEAN_STEP_DELAY_MS 3000
+static bool clean_request = false;       // put the clean bit in command frames
+static bool clean_step2_pending = false; // step 1 sent, clean frame still to come
+static TickType_t clean_step1_time = 0;
 
 /* Delayed NVS write to reduce flash wear */
 static TimerHandle_t nvs_save_timer = NULL;
@@ -336,13 +347,19 @@ static void hvac_build_frame(const hvac_state_t *st, uint8_t frame[HVAC_CMD_FRAM
     uint8_t options = 0x00;
     if (st->eco_mode) options |= 0x01;      // Bit 0: ECO mode
     if (st->night_mode) options |= 0x02;    // Bit 1: NIGHT mode
-    // clean mode: bit 0x10 (READ from AC, not sent TO AC)
+    if (clean_request) options |= 0x10;     // Bit 4: start/keep SELF-CLEAN
     if (st->purifier_on) options |= 0x40;   // Bit 6: PURIFIER mode
     if (st->display_on) options |= 0x80;    // Bit 7: DISPLAY on/off
     frame[15] = options;
 
     // Byte 16: Mute
     frame[16] = st->mute_on ? 0x01 : 0x00;  // Bit 0: MUTE (silent command)
+
+    // A self-clean frame carries a fixed temperature byte and is never muted
+    if (clean_request) {
+        frame[13] = 0x0B;
+        frame[16] = 0x00;
+    }
 
     // Calculate CRC over first 22 bytes
     uint16_t crc = hvac_crc16(frame, 22);
@@ -359,12 +376,26 @@ static void hvac_build_frame(const hvac_state_t *st, uint8_t frame[HVAC_CMD_FRAM
  * Until the AC confirms it, incoming status frames are not allowed to
  * overwrite current_state (see hvac_decode_state).
  */
-static void hvac_queue_command_locked(void)
+static void hvac_queue_frame_locked(void)
 {
     hvac_build_frame(&current_state, pending_cmd.frame);
     pending_cmd.expected = current_state;
     pending_cmd.tries = 0;
     pending_cmd.active = true;
+}
+
+/**
+ * @brief Queue a regular command (caller holds state_mutex)
+ *
+ * Any regular command cancels a self-clean cycle, requested or running: the
+ * frame goes out without the clean bit.
+ */
+static void hvac_queue_command_locked(void)
+{
+    clean_request = false;
+    clean_step2_pending = false;
+    current_state.self_clean = false;
+    hvac_queue_frame_locked();
 }
 
 /**
@@ -466,7 +497,8 @@ static void hvac_parse_status(const uint8_t *frame, hvac_state_t *st, uint8_t *s
 /**
  * @brief Does a reported state confirm the command we sent?
  */
-static bool hvac_status_matches(const hvac_state_t *expected, const hvac_state_t *st)
+static bool hvac_status_matches(const hvac_state_t *expected, uint8_t expected_swing,
+                                const hvac_state_t *st, uint8_t swing_byte)
 {
     if (!expected->power_on) {
         // The AC clears options on its own when switched off - only power matters
@@ -480,7 +512,7 @@ static bool hvac_status_matches(const hvac_state_t *expected, const hvac_state_t
         return false;
     }
     return expected->fan_speed == st->fan_speed &&
-           expected->swing_on == st->swing_on &&
+           expected_swing == swing_byte &&
            expected->eco_mode == st->eco_mode &&
            expected->night_mode == st->night_mode &&
            expected->purifier_on == st->purifier_on &&
@@ -508,6 +540,9 @@ static bool hvac_state_changed_locked(void)
         prev_state.purifier_on != current_state.purifier_on ||
         prev_state.clean_status != current_state.clean_status ||
         prev_state.swing_on != current_state.swing_on ||
+        prev_state.swing_v_pos != current_state.swing_v_pos ||
+        prev_state.swing_h != current_state.swing_h ||
+        prev_state.self_clean != current_state.self_clean ||
         prev_state.mute_on != current_state.mute_on ||
         prev_state.error != current_state.error ||
         strcmp(prev_state.error_text, current_state.error_text) != 0;
@@ -617,7 +652,8 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
             if (dt < pdMS_TO_TICKS(HVAC_ACK_EVAL_MIN_MS)) {
                 ESP_LOGD(TAG, "Status ignored - too early to be a reply to the command");
                 apply = false;
-            } else if (!from_remote && hvac_status_matches(&inflight_cmd.expected, &st)) {
+            } else if (!from_remote && hvac_status_matches(&inflight_cmd.expected, inflight_cmd.frame[14],
+                                                           &st, swing_byte)) {
                 ESP_LOGI(TAG, "Command confirmed by AC after %lu ms (try %d)",
                          (unsigned long)pdTICKS_TO_MS(dt), inflight_cmd.tries + 1);
                 inflight_cmd.active = false;
@@ -629,11 +665,33 @@ static void hvac_decode_state(const uint8_t *frame, size_t len)
         }
 
         if (apply) {
+            // Night, eco and purifier do not survive the AC being switched off:
+            // clear them so they are not re-sent with the next power-on.
+            if (!st.power_on) {
+                st.eco_mode = false;
+                st.night_mode = false;
+                st.purifier_on = false;
+            }
+
             current_state = st;
             swing_raw = swing_byte;
             use_fahrenheit = fahrenheit;
             self_clean_active = self_clean;
             current_state.clean_status = filter_dirty || self_clean_active;
+
+            // Louvre: horizontal mode, and the vertical position when it is fixed
+            current_state.swing_h = (hvac_swing_h_t)(swing_byte >> 4);
+            uint8_t swing_v = swing_byte & 0x0F;
+            if (swing_v >= HVAC_SWING_P1 && swing_v <= HVAC_SWING_P5) {
+                current_state.swing_v_pos = swing_v - HVAC_SWING_P1 + 1;
+            }
+
+            // Self-clean: once the AC no longer reports the cycle, stop
+            // sending the clean bit with later commands.
+            if (!self_clean_active && !clean_step2_pending) {
+                clean_request = false;
+            }
+            current_state.self_clean = self_clean_active || clean_step2_pending;
         } else {
             // The room temperature is always safe to take
             current_state.ambient_temp_c = st.ambient_temp_c;
@@ -670,6 +728,15 @@ static void hvac_tx_service(void)
     bool retry_due = false;
 
     xSemaphoreTake(state_mutex, portMAX_DELAY);
+
+    // Self-clean step 2: the AC has had time to switch off - send the clean bit
+    if (clean_step2_pending && !pending_cmd.active && !inflight_cmd.active &&
+        (now - clean_step1_time) >= pdMS_TO_TICKS(HVAC_CLEAN_STEP_DELAY_MS)) {
+        clean_step2_pending = false;
+        clean_request = true;
+        ESP_LOGI(TAG, "Self-clean: sending clean command");
+        hvac_queue_frame_locked();
+    }
 
     if (inflight_cmd.active && !pending_cmd.active) {
         TickType_t dt = now - inflight_cmd.sent_at;
@@ -1073,6 +1140,12 @@ esp_err_t hvac_set_power(bool power_on)
     ESP_LOGI(TAG, "Setting power: %s", power_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
     current_state.power_on = power_on;
+    if (!power_on) {
+        // These options do not survive power-off
+        current_state.eco_mode = false;
+        current_state.night_mode = false;
+        current_state.purifier_on = false;
+    }
     hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
@@ -1094,6 +1167,19 @@ esp_err_t hvac_set_mode(hvac_mode_t mode)
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
     return ESP_OK;
+}
+
+/**
+ * @brief A request cannot be honoured (caller holds state_mutex)
+ *
+ * The Zigbee stack has already written the requested value to its attribute,
+ * so fetch the AC state and push it back: the control in Home Assistant then
+ * returns to what the AC really has instead of staying wrong.
+ */
+static void hvac_reject_request_locked(void)
+{
+    status_pending = true;
+    force_notify = true;
 }
 
 /**
@@ -1123,14 +1209,11 @@ esp_err_t hvac_set_eco_mode(bool eco_on)
     ESP_LOGI(TAG, "Setting eco mode: %s", eco_on ? "ON" : "OFF");
 
     xSemaphoreTake(state_mutex, portMAX_DELAY);
-    // Eco mode only works in COOL mode
-    if (eco_on && current_state.mode != HVAC_MODE_COOL) {
-        // The Zigbee attribute was already written to ON by the stack: fetch
-        // the AC state and push it back so the switch does not stay wrong.
-        status_pending = true;
-        force_notify = true;
+    // Eco mode only works in COOL mode, with the AC on
+    if (eco_on && (current_state.mode != HVAC_MODE_COOL || !current_state.power_on)) {
+        hvac_reject_request_locked();
         xSemaphoreGive(state_mutex);
-        ESP_LOGW(TAG, "Eco mode only available in COOL mode");
+        ESP_LOGW(TAG, "Eco mode only available in COOL mode with the AC on");
         return ESP_ERR_INVALID_STATE;
     }
     current_state.eco_mode = eco_on;
@@ -1173,6 +1256,94 @@ esp_err_t hvac_set_swing(bool swing_on)
     hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
     hvac_save_settings();
+    return ESP_OK;
+}
+
+/**
+ * @brief Move the vertical louvre to a fixed position
+ */
+esp_err_t hvac_set_swing_position(uint8_t position)
+{
+    if (position < 1 || position > 5) {
+        ESP_LOGW(TAG, "Louvre position out of range: %d (valid: 1-5)", position);
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+        hvac_reject_request_locked();
+        xSemaphoreGive(state_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Setting vertical louvre position: %d", position);
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    // A fixed position replaces vertical swing
+    swing_raw = (swing_raw & 0xF0) | (HVAC_SWING_P1 + position - 1);
+    current_state.swing_on = false;
+    current_state.swing_v_pos = position;
+    hvac_queue_command_locked();
+    xSemaphoreGive(state_mutex);
+    return ESP_OK;
+}
+
+/**
+ * @brief Set horizontal swing mode
+ */
+esp_err_t hvac_set_swing_horizontal(hvac_swing_h_t mode)
+{
+    bool valid = (mode <= HVAC_SWING_H_P5) ||
+                 mode == HVAC_SWING_H_RANGE_P1_P5 || mode == HVAC_SWING_H_AUTO_MID_OUT;
+    if (!valid) {
+        ESP_LOGW(TAG, "Invalid horizontal swing mode: 0x%02X", mode);
+        xSemaphoreTake(state_mutex, portMAX_DELAY);
+        hvac_reject_request_locked();
+        xSemaphoreGive(state_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "Setting horizontal swing: 0x%02X", mode);
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+    swing_raw = ((uint8_t)mode << 4) | (swing_raw & 0x0F);
+    current_state.swing_h = mode;
+    hvac_queue_command_locked();
+    xSemaphoreGive(state_mutex);
+    return ESP_OK;
+}
+
+/**
+ * @brief Start or stop a self-clean cycle
+ */
+esp_err_t hvac_set_self_clean(bool on)
+{
+    ESP_LOGI(TAG, "Setting self-clean: %s", on ? "ON" : "OFF");
+    xSemaphoreTake(state_mutex, portMAX_DELAY);
+
+    if (!on) {
+        // A regular frame (no clean bit) stops the cycle
+        hvac_queue_command_locked();
+    } else if (current_state.power_on ||
+               (current_state.mode != HVAC_MODE_COOL && current_state.mode != HVAC_MODE_DRY)) {
+        // Step 1: the AC only self-cleans while off in COOL or DRY mode.
+        // Step 2 (the clean frame) follows from hvac_tx_service.
+        ESP_LOGI(TAG, "Self-clean: switching AC off first, clean command in %d ms",
+                 HVAC_CLEAN_STEP_DELAY_MS);
+        current_state.power_on = false;
+        current_state.eco_mode = false;
+        current_state.night_mode = false;
+        current_state.purifier_on = false;
+        if (current_state.mode != HVAC_MODE_COOL && current_state.mode != HVAC_MODE_DRY) {
+            current_state.mode = HVAC_MODE_COOL;
+        }
+        clean_request = false;
+        clean_step2_pending = true;
+        clean_step1_time = xTaskGetTickCount();
+        current_state.self_clean = true;
+        hvac_queue_frame_locked();
+    } else {
+        clean_request = true;
+        clean_step2_pending = false;
+        current_state.self_clean = true;
+        hvac_queue_frame_locked();
+    }
+
+    xSemaphoreGive(state_mutex);
     return ESP_OK;
 }
 
@@ -1229,6 +1400,12 @@ esp_err_t hvac_set_night_mode(bool night_on)
 {
     ESP_LOGI(TAG, "Setting night mode: %s", night_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
+    if (night_on && !current_state.power_on) {
+        hvac_reject_request_locked();
+        xSemaphoreGive(state_mutex);
+        ESP_LOGW(TAG, "Night mode only available with the AC on");
+        return ESP_ERR_INVALID_STATE;
+    }
     current_state.night_mode = night_on;
     hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);
@@ -1243,6 +1420,12 @@ esp_err_t hvac_set_purifier(bool purifier_on)
 {
     ESP_LOGI(TAG, "Setting purifier: %s", purifier_on ? "ON" : "OFF");
     xSemaphoreTake(state_mutex, portMAX_DELAY);
+    if (purifier_on && !current_state.power_on) {
+        hvac_reject_request_locked();
+        xSemaphoreGive(state_mutex);
+        ESP_LOGW(TAG, "Purifier only available with the AC on");
+        return ESP_ERR_INVALID_STATE;
+    }
     current_state.purifier_on = purifier_on;
     hvac_queue_command_locked();
     xSemaphoreGive(state_mutex);

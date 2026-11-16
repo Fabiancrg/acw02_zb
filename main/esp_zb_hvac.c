@@ -63,6 +63,21 @@ static void fill_zcl_string(char *buf, size_t bufsize, const char *src) {
     memcpy(&buf[1], src, len);
 }
 
+/* Horizontal swing modes in the order exposed on Zigbee: the Multistate Value
+ * PresentValue on the swing endpoint is a 1-based index into this table. */
+static const hvac_swing_h_t swing_h_modes[] = {
+    HVAC_SWING_H_STOP,          // 1
+    HVAC_SWING_H_AUTO_LEFT,     // 2  full swing
+    HVAC_SWING_H_P1,            // 3
+    HVAC_SWING_H_P2,            // 4
+    HVAC_SWING_H_P3,            // 5
+    HVAC_SWING_H_P4,            // 6
+    HVAC_SWING_H_P5,            // 7
+    HVAC_SWING_H_RANGE_P1_P5,   // 8
+    HVAC_SWING_H_AUTO_MID_OUT,  // 9
+};
+#define SWING_H_MODE_COUNT (sizeof(swing_h_modes) / sizeof(swing_h_modes[0]))
+
 /* Factory reset function */
 static void factory_reset_device(uint8_t param)
 {
@@ -521,6 +536,16 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 }
                 break;
                 
+            case ESP_ZB_ZCL_ATTR_THERMOSTAT_AC_LOUVER_POSITION_ID: {
+                uint8_t position = *(uint8_t *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[LOUVRE] Vertical position write request: %d", position);
+                esp_err_t pos_err = hvac_set_swing_position(position);
+                if (pos_err != ESP_OK) {
+                    ESP_LOGW(TAG, "hvac_set_swing_position(%d) failed: %s", position, esp_err_to_name(pos_err));
+                }
+                break;
+            }
+
             default:
                 ESP_LOGD(TAG, "Unhandled thermostat attribute: 0x%x", message->attribute.id);
                 break;
@@ -569,6 +594,19 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 hvac_set_swing(on_off);
                 /* Don't schedule update - UART callback will handle it when AC responds */
             }
+        } else if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID) {
+                uint16_t index = *(uint16_t *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[SWING] Horizontal mode index %d write request", index);
+                /* An out-of-range index is passed on as an invalid mode so the
+                 * driver rejects it and restores the real value on Zigbee. */
+                hvac_swing_h_t mode = (index >= 1 && index <= SWING_H_MODE_COUNT)
+                                          ? swing_h_modes[index - 1] : (hvac_swing_h_t)0xFF;
+                esp_err_t swing_h_err = hvac_set_swing_horizontal(mode);
+                if (swing_h_err != ESP_OK) {
+                    ESP_LOGW(TAG, "hvac_set_swing_horizontal(index %d) failed: %s", index, esp_err_to_name(swing_h_err));
+                }
+            }
         }
     }
     /* Handle Display Switch - Endpoint 4 */
@@ -608,6 +646,16 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
     else if (message->info.dst_endpoint == HA_ESP_CLEAN_ENDPOINT) {
         // Clean status is read-only from AC, no commands accepted
         ESP_LOGW(TAG, "[CLEAN] Clean status is read-only");
+    }
+    /* Handle Self-Clean Switch - Endpoint 10 */
+    else if (message->info.dst_endpoint == HA_ESP_SELF_CLEAN_ENDPOINT) {
+        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
+            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID) {
+                bool on_off = *(bool *)message->attribute.data.value;
+                ESP_LOGI(TAG, "[SELFCLEAN] %s (sending to AC, will update when AC responds)", on_off ? "ON" : "OFF");
+                hvac_set_self_clean(on_off);
+            }
+        }
     }
     /* Handle Mute Switch - Endpoint 8 */
     else if (message->info.dst_endpoint == HA_ESP_MUTE_ENDPOINT) {
@@ -793,6 +841,32 @@ static void hvac_update_zigbee_attributes(uint8_t param)
                                  ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
                                  &state.mute_on, false);
     
+    /* Update vertical louvre position - Endpoint 1 (thermostat AC louver position) */
+    uint8_t louver_position = state.swing_v_pos;
+    esp_zb_zcl_set_attribute_val(HA_ESP_HVAC_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_THERMOSTAT_AC_LOUVER_POSITION_ID,
+                                 &louver_position, false);
+
+    /* Update horizontal swing mode - Endpoint 3 (multistate value, 1-based index) */
+    uint16_t swing_h_index = 1;  // stop, also used for a mode we do not know
+    for (uint16_t i = 0; i < SWING_H_MODE_COUNT; i++) {
+        if (swing_h_modes[i] == state.swing_h) {
+            swing_h_index = i + 1;
+            break;
+        }
+    }
+    esp_zb_zcl_set_attribute_val(HA_ESP_SWING_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_MULTI_VALUE,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_MULTI_VALUE_PRESENT_VALUE_ID,
+                                 &swing_h_index, false);
+
+    /* Update Self-clean switch state - Endpoint 10 */
+    esp_zb_zcl_set_attribute_val(HA_ESP_SELF_CLEAN_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID,
+                                 &state.self_clean, false);
+
     /* Update error text in Basic cluster locationDescription attribute - Endpoint 1 */
     // Zigbee string format: first byte is length, followed by chars
     static char error_text_zigbee[65];  // Static to prevent stack corruption
@@ -1049,6 +1123,19 @@ static void esp_zb_task(void *pvParameters)
                                        ESP_ZB_ZCL_ATTR_THERMOSTAT_RUNNING_MODE_ID,
                                        &running_mode);
     
+    /* AC louver position: fixed vertical louvre position. Carries the raw ACW02
+     * position number (1-5); the converter gives the positions their names -
+     * same approach as the fan mode. Not fatal if the stack refuses it. */
+    uint8_t louver_position = 3;
+    esp_err_t louver_ret = esp_zb_cluster_add_attr(esp_zb_thermostat_cluster, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT,
+                                                   ESP_ZB_ZCL_ATTR_THERMOSTAT_AC_LOUVER_POSITION_ID,
+                                                   ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM,
+                                                   ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                                   &louver_position);
+    if (louver_ret != ESP_OK) {
+        ESP_LOGE(TAG, "  [ERROR] AC louver position attribute not added: %s", esp_err_to_name(louver_ret));
+    }
+
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_thermostat_cluster(esp_zb_hvac_clusters, esp_zb_thermostat_cluster,
                                                                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_LOGI(TAG, "  [OK] Thermostat cluster added with REPORTING flag");
@@ -1163,6 +1250,19 @@ static void esp_zb_task(void *pvParameters)
                                             &swing_on_off_val));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_swing_clusters, esp_zb_swing_on_off_cluster,
                                                            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    /* Horizontal swing mode: Multistate Value cluster on the swing endpoint.
+     * PresentValue is a 1-based index into swing_h_modes[] (1 = stop). */
+    esp_zb_multistate_value_cluster_cfg_t swing_h_cfg = {
+        .number_of_states = SWING_H_MODE_COUNT,
+        .out_of_service = false,
+        .present_value = 1,
+        .status_flags = 0,
+    };
+    esp_zb_attribute_list_t *esp_zb_swing_h_cluster = esp_zb_multistate_value_cluster_create(&swing_h_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_multistate_value_cluster(esp_zb_swing_clusters, esp_zb_swing_h_cluster,
+                                                                     ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
     esp_zb_endpoint_config_t swing_endpoint_config = {
         .endpoint = HA_ESP_SWING_ENDPOINT,
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
@@ -1297,6 +1397,30 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_mute_clusters, mute_endpoint_config);
     ESP_LOGI(TAG, "[OK] Mute switch endpoint %d added", HA_ESP_MUTE_ENDPOINT);
     
+    /* Create Self-Clean Switch - Endpoint 10 with REPORTING flag */
+    ESP_LOGI(TAG, "[SELFCLEAN] Creating Self-clean switch endpoint %d with REPORTING flag...", HA_ESP_SELF_CLEAN_ENDPOINT);
+    esp_zb_cluster_list_t *esp_zb_self_clean_clusters = esp_zb_zcl_cluster_list_create();
+    esp_zb_attribute_list_t *esp_zb_self_clean_basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(esp_zb_self_clean_clusters, esp_zb_self_clean_basic_cluster,
+                                                          ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+
+    bool self_clean_on_off_val = false;
+    esp_zb_attribute_list_t *esp_zb_self_clean_on_off_cluster = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_ON_OFF);
+    ESP_ERROR_CHECK(esp_zb_cluster_add_attr(esp_zb_self_clean_on_off_cluster, ESP_ZB_ZCL_CLUSTER_ID_ON_OFF,
+                                            ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+                                            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+                                            &self_clean_on_off_val));
+    ESP_ERROR_CHECK(esp_zb_cluster_list_add_on_off_cluster(esp_zb_self_clean_clusters, esp_zb_self_clean_on_off_cluster,
+                                                           ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    esp_zb_endpoint_config_t self_clean_endpoint_config = {
+        .endpoint = HA_ESP_SELF_CLEAN_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version = 0
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_self_clean_clusters, self_clean_endpoint_config);
+    ESP_LOGI(TAG, "[OK] Self-clean switch endpoint %d added", HA_ESP_SELF_CLEAN_ENDPOINT);
+
     /* Create Error Status Binary Sensor - Endpoint 9 with REPORTING flag (Read-Only) */
     ESP_LOGI(TAG, "[ERROR] Creating Error status binary sensor endpoint %d with REPORTING flag...", HA_ESP_ERROR_ENDPOINT);
     esp_zb_cluster_list_t *esp_zb_error_clusters = esp_zb_zcl_cluster_list_create();
@@ -1343,6 +1467,12 @@ static void esp_zb_task(void *pvParameters)
         .model_identifier = ESP_MODEL_IDENTIFIER,
     };
     esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SWING_ENDPOINT, &info_swing);
+
+    zcl_basic_manufacturer_info_t info_self_clean = {
+        .manufacturer_name = ESP_MANUFACTURER_NAME,
+        .model_identifier = ESP_MODEL_IDENTIFIER,
+    };
+    esp_zcl_utility_add_ep_basic_manufacturer_info(esp_zb_ep_list, HA_ESP_SELF_CLEAN_ENDPOINT, &info_self_clean);
     
     zcl_basic_manufacturer_info_t info_display = {
         .manufacturer_name = ESP_MANUFACTURER_NAME,
